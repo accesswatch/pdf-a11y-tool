@@ -150,7 +150,7 @@ class PdfDocument:
         with self._lock:
             if self._pdf is not None:
                 self._pdf.close()
-            self._pdf = pikepdf.open(path)
+            self._pdf = pikepdf.open(path, allow_overwriting_input=True)
             self._path = path
             self._dirty = False
             self.commands.clear()

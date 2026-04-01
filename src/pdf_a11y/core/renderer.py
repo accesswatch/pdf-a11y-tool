@@ -52,6 +52,7 @@ class LRUCache:
         with self._lock:
             if key in self._cache:
                 self._cache.move_to_end(key)
+                self._cache[key] = bitmap
             else:
                 if len(self._cache) >= self._max_size:
                     self._cache.popitem(last=False)

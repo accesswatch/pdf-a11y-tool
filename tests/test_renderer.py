@@ -325,10 +325,10 @@ class TestPageRenderer:
             renderer.render_page(0, 1.0)  # warm up cache
 
         callback = MagicMock()
-        with patch.object(wx_mock, "CallAfter") as mock_call_after:
+        with patch("pdf_a11y.core.renderer.wx") as mock_wx:
             renderer.render_page_async(0, 1.0, callback)
         # Should use CallAfter immediately without spawning a thread
-        mock_call_after.assert_called_once_with(callback, bitmap)
+        mock_wx.CallAfter.assert_called_once_with(callback, bitmap)
 
     def test_render_page_async_spawns_thread_on_cache_miss(self):
         renderer = self._make_renderer()
