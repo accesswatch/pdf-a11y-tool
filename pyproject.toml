@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pdf-a11y-tool"
+version = "0.1.0"
+description = "Accessible PDF remediation, form building, and auto-tagging tool"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pikepdf>=9.0",
+    "pypdfium2>=4.0",
+    "wxPython>=4.2",
+    "Pillow>=10.0",
+    "platformdirs>=4.0",
+    "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+pdf-a11y-tool = "pdf_a11y.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
