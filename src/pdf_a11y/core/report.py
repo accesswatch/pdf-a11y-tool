@@ -30,6 +30,7 @@ from pathlib import Path
 import pikepdf
 
 from pdf_a11y.core.validator import Finding
+from pdf_a11y.core import rule_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -568,17 +569,8 @@ def _simulate_screen_reader(
 # Deep analysis per issue type
 # ---------------------------------------------------------------------------
 
-_WCAG_NAMES: dict[str, str] = {
-    "1.1.1": "Non-text Content",
-    "1.3.1": "Info and Relationships",
-    "1.3.2": "Meaningful Sequence",
-    "2.4.1": "Bypass Blocks",
-    "2.4.2": "Page Titled",
-    "2.4.3": "Focus Order",
-    "2.4.6": "Headings and Labels",
-    "3.1.1": "Language of Page",
-    "4.1.2": "Name, Role, Value",
-}
+# WCAG names now come from rule_catalog.WCAG_LINKS.
+_WCAG_NAMES = {k: v[0] for k, v in rule_catalog.WCAG_LINKS.items()}
 
 
 def _deep_analysis_section(
@@ -596,14 +588,8 @@ def _deep_analysis_section(
         count = entry["count"]
         f = entry["finding"]
 
-        # Only produce deep analysis for notable issues
-        if rule_id in (
-            "PDFUA.TITLE", "PDFBP.NO_HEADINGS", "PDFBP.NONSTD_NO_ALT",
-            "PDFBP.TABLE_SCOPE", "PDFBP.TABLE_HEADERS",
-            "PDFBP.FLAT_STRUCTURE", "PDFBP.FORMS_DETACHED",
-            "PDFBP.UNDERSCORE_FILL", "PDFUA.FORMS",
-            "PDFUA.IMG.ALT", "PDFUA.HEADINGS",
-        ):
+        # Produce deep analysis for all built-in rules that have catalog entries
+        if rule_id in rule_catalog.BUILTIN_RULE_IDS:
             issue_number += 1
             lines.extend(_deep_analysis_for_rule(
                 issue_number, rule_id, count, entry, pdf, audience
@@ -623,18 +609,16 @@ def _deep_analysis_for_rule(
     """Return deep analysis lines for a specific rule."""
     lines: list[str] = []
     f: Finding = entry["finding"]
-    severity_label = {"error": "CRITICAL", "warning": "Important", "tip": "Recommended"}.get(
-        f.severity, f.severity.capitalize()
-    )
-    wcag_name = _WCAG_NAMES.get(f.wcag, "")
-    wcag_ref = f"{f.wcag} ({wcag_name})" if wcag_name else f.wcag
+    sev_label = rule_catalog.severity_label(f.severity)
+    wname = rule_catalog.wcag_name(f.wcag)
+    wcag_ref = f"{f.wcag} ({wname})" if wname else f.wcag
     count_str = f" (x{count})" if count > 1 else ""
 
-    lines.append(f"### Issue {issue_num}: {_friendly_rule_name(rule_id)}{count_str}")
+    lines.append(f"<details>")
+    lines.append(f"<summary><strong>Issue {issue_num}: {rule_catalog.friendly_rule_name(rule_id)}{count_str}</strong> &mdash; {sev_label}</summary>")
     lines.append("")
-    lines.append(f"**Severity**: {severity_label}")
     lines.append(f"**WCAG**: {wcag_ref}")
-    lines.append(f"**Impact**: {_impact_description(rule_id)}")
+    lines.append(f"**Impact**: {rule_catalog.impact_description(rule_id)}")
     lines.append("")
 
     # "What the tool detects" section
@@ -660,11 +644,16 @@ def _deep_analysis_for_rule(
 
     # Also show the other tool's steps
     other = ReportAudience.ACROBAT if audience == ReportAudience.TOOL else ReportAudience.TOOL
-    lines.append(f"#### How to fix: {_audience_label(other)}")
+    lines.append(f"<details>")
+    lines.append(f"<summary>How to fix: {_audience_label(other)}</summary>")
     lines.append("")
     other_steps = _detailed_fix_steps(rule_id, other)
     for i, step in enumerate(other_steps, 1):
         lines.append(f"{i}. {step}")
+    lines.append("")
+    lines.append("</details>")
+    lines.append("")
+    lines.append("</details>")
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -674,78 +663,12 @@ def _deep_analysis_for_rule(
 
 def _friendly_rule_name(rule_id: str) -> str:
     """Map a rule_id to a human-friendly issue title."""
-    names: dict[str, str] = {
-        "PDFUA.TITLE": "Missing Document Title",
-        "PDFBP.NO_HEADINGS": "No Headings",
-        "PDFBP.NONSTD_NO_ALT": "Non-Standard Tags Without Alt Text",
-        "PDFBP.TABLE_SCOPE": "Table Headers Missing Scope",
-        "PDFBP.TABLE_HEADERS": "Table Missing Header Cells",
-        "PDFBP.FLAT_STRUCTURE": "Flat Document Structure",
-        "PDFBP.FORMS_DETACHED": "Form Fields Detached From Labels",
-        "PDFBP.UNDERSCORE_FILL": "Underscore Fill Patterns",
-        "PDFUA.FORMS": "Form Fields Missing Tooltips",
-        "PDFUA.IMG.ALT": "Images Missing Alt Text",
-        "PDFUA.HEADINGS": "Heading Hierarchy Issues",
-        "PDFUA.BOOKMARKS": "Missing Bookmarks",
-        "PDFBP.DISPLAY_TITLE": "Display Document Title Not Set",
-        "PDFBP.NAV.TABORDER": "Tab Order Not Set to Structure",
-    }
-    return names.get(rule_id, rule_id)
+    return rule_catalog.friendly_rule_name(rule_id)
 
 
 def _impact_description(rule_id: str) -> str:
     """Return an impact description for a rule."""
-    impacts: dict[str, str] = {
-        "PDFUA.TITLE": (
-            "Screen readers announce the filename instead of a meaningful "
-            "title when opening the document."
-        ),
-        "PDFBP.NO_HEADINGS": (
-            "Screen reader users cannot navigate between form sections. "
-            "The document may have clear visual sections but they are all "
-            "tagged as paragraphs instead of heading tags."
-        ),
-        "PDFBP.NONSTD_NO_ALT": (
-            "Screen readers encounter unnamed non-text elements. Users "
-            "hear the tag type name (e.g., 'InlineShape') with no context "
-            "about what the element represents."
-        ),
-        "PDFBP.TABLE_SCOPE": (
-            "Screen readers cannot associate data cells with their headers "
-            "when navigating the table, making data relationships unclear."
-        ),
-        "PDFBP.TABLE_HEADERS": (
-            "Without header cells, screen readers cannot announce column "
-            "or row labels when navigating data cells."
-        ),
-        "PDFBP.FLAT_STRUCTURE": (
-            "A flat tag tree with many direct children and no sections "
-            "makes it impossible for screen reader users to navigate "
-            "by section or understand the document's organization."
-        ),
-        "PDFBP.FORMS_DETACHED": (
-            "Screen readers encounter all text first, then all fields, "
-            "making it impossible to associate fields with their labels."
-        ),
-        "PDFBP.UNDERSCORE_FILL": (
-            "Screen readers announce each underscore character individually, "
-            "creating a poor experience. These should be marked as artifacts "
-            "if a form field is overlaid."
-        ),
-        "PDFUA.FORMS": (
-            "Form fields without tooltips are announced as unlabeled "
-            "to screen reader users, who cannot determine the field's purpose."
-        ),
-        "PDFUA.IMG.ALT": (
-            "Images without alternative text are invisible to screen reader "
-            "users. The content or function conveyed by the image is lost."
-        ),
-        "PDFUA.HEADINGS": (
-            "Skipped heading levels (e.g., H1 followed by H3) disrupt "
-            "screen reader heading navigation and suggest missing content."
-        ),
-    }
-    return impacts.get(rule_id, "Assistive technology users may have difficulty with this content.")
+    return rule_catalog.impact_description(rule_id)
 
 
 def _what_tool_detects(rule_id: str, count: int, pdf: pikepdf.Pdf) -> str:
@@ -901,146 +824,12 @@ def _detailed_fix_steps(rule_id: str, audience: ReportAudience) -> list[str]:
 
 def _tool_fix_steps(rule_id: str) -> list[str]:
     """PDF Accessibility Tool remediation steps."""
-    steps: dict[str, list[str]] = {
-        "PDFUA.TITLE": [
-            "Open **Document Properties** (Alt+Enter).",
-            "**Tab** to the Title field.",
-            "Type the document title.",
-            "Press **Enter** to apply. The tool writes the title to both /Info /Title and XMP dc:title metadata simultaneously.",
-            "The checker reruns automatically and the PDFUA.TITLE error clears from the Issues panel.",
-        ],
-        "PDFBP.NO_HEADINGS": [
-            "**Tag Tree panel** (Alt+3): Use the arrow keys to navigate to each bold section header.",
-            "Press **F2** to open the Change Type editor. Select /H1 for the document title, /H2 for sections.",
-            "Press **Enter** to confirm. Repeat for each heading.",
-            "Alternatively, use **Auto-Tagger** (Alt+T, A): Review the heading candidate list, press **Space** to accept/reject each, then **Enter** on Apply.",
-            "After applying, the **Screen Reader Preview** refreshes to show the new heading structure.",
-        ],
-        "PDFBP.NONSTD_NO_ALT": [
-            "**Alt Text Panel** (Alt+4): The non-standard elements are listed.",
-            "For decorative items: Press **Space** on the \"Mark as decorative\" checkbox.",
-            "Press **Alt+N** to advance to the next element and repeat.",
-            "For meaningful images: Type appropriate alt text in the field and press Enter.",
-            "Alternatively, in the **Tag Tree**: Navigate to each element, press **Delete** and choose \"Mark as Artifact\" for decorative items.",
-        ],
-        "PDFBP.TABLE_SCOPE": [
-            "In the **Table Editor**, Tab to the first header cell.",
-            "Press **Enter** to select it.",
-            "Use the **Scope dropdown** to set Row or Column.",
-            "Press **Enter** to apply. Repeat for each TH cell.",
-        ],
-        "PDFBP.TABLE_HEADERS": [
-            "In the **Table Editor**, select the first row of cells.",
-            "Press **Ctrl+H** to convert TD cells to TH header cells.",
-            "Then set Scope on each new header cell.",
-        ],
-        "PDFBP.FLAT_STRUCTURE": [
-            "In the **Tag Tree**, select the Document root.",
-            "Press **Insert** to add a /Sect child.",
-            "Select related heading and content elements, press **Ctrl+X** to cut.",
-            "Arrow to the Sect element, press **Ctrl+V** to paste.",
-            "Repeat for each logical section of the document.",
-        ],
-        "PDFBP.FORMS_DETACHED": [
-            "Use **Auto-Sort Reading Order** (Alt+T, R) to interleave form fields with their labels.",
-            "Preview the proposed order in the dialog.",
-            "Press **Enter** to apply. Each field is reparented to follow its label.",
-            "Ctrl+Z undoes all changes if needed.",
-        ],
-        "PDFBP.UNDERSCORE_FILL": [
-            "In the **Tag Tree**, navigate to each paragraph with underscore fills.",
-            "If a form field overlaps, press **Delete** and choose 'Mark as Artifact'.",
-            "The **'Clean All Underscore Fills'** batch action (Alt+T, U) processes all flagged elements at once.",
-        ],
-        "PDFUA.FORMS": [
-            "In the **Field Properties panel**, Tab to the Tooltip field.",
-            "Enter a descriptive label that matches the visual label.",
-            "Press **Enter** to apply. Repeat for each field.",
-        ],
-        "PDFUA.IMG.ALT": [
-            "**Alt Text Panel** (Alt+4): The images are listed.",
-            "For each image, type appropriate alt text describing the content.",
-            "Press **Enter** to apply, then **Alt+N** for next image.",
-            "For decorative images, check **Mark as decorative** instead.",
-        ],
-        "PDFUA.HEADINGS": [
-            "In the **Tag Tree** (Alt+3), navigate to the heading with the wrong level.",
-            "Press **F2** to open the Change Type editor.",
-            "Select the correct heading level (H1-H6) maintaining proper hierarchy.",
-            "Press **Enter** to confirm.",
-        ],
-    }
-    return steps.get(rule_id, ["Follow the remediation guidance in the Findings section above."])
+    return rule_catalog.tool_fix_steps(rule_id)
 
 
 def _acrobat_fix_steps(rule_id: str) -> list[str]:
     """Adobe Acrobat Pro remediation steps."""
-    steps: dict[str, list[str]] = {
-        "PDFUA.TITLE": [
-            "Open **File > Properties** (Ctrl+D).",
-            "In the **Description** tab, Tab to the Title field.",
-            "Type the title and press **OK**.",
-            "Open File > Properties again, go to **Initial View** tab, verify \"Show\" is set to \"Document Title\".",
-        ],
-        "PDFBP.NO_HEADINGS": [
-            "Open the **Tags panel** (View > Show/Hide > Navigation Panes > Tags).",
-            "Expand the tag tree and locate each paragraph that should be a heading.",
-            "Select the /P tag, press **Ctrl+E** to open Properties.",
-            "In the **Tag** tab, change the Type from P to H1 (title) or H2 (sections). Press **OK**.",
-            "Repeat for all heading candidates.",
-        ],
-        "PDFBP.NONSTD_NO_ALT": [
-            "In the **Tags panel**, select the non-standard tag.",
-            "Press **Ctrl+E** to open Properties.",
-            "Enter **Alternative Text** for meaningful content.",
-            "For decorative items, change Type to **Artifact**.",
-        ],
-        "PDFBP.TABLE_SCOPE": [
-            "In the **Tags panel**, select a TH tag.",
-            "Press **Ctrl+E** to open Properties > Tag tab.",
-            "Set **Scope** to Row or Column.",
-            "Press **OK**. Repeat for each TH cell.",
-        ],
-        "PDFBP.TABLE_HEADERS": [
-            "In the **Tags panel**, select each TD in the header row.",
-            "Press **Ctrl+E** to open Properties.",
-            "Change **Type** from TD to TH.",
-            "Then set Scope to Column. Press **OK**.",
-        ],
-        "PDFBP.FLAT_STRUCTURE": [
-            "In the **Tags panel**, create new Sect tags under Document.",
-            "Drag or cut/paste related heading and content tags into each section.",
-        ],
-        "PDFBP.FORMS_DETACHED": [
-            "In the **Tags panel**, cut each Form tag (Ctrl+X).",
-            "Paste it (Ctrl+V) after the P tag that contains its label text.",
-            "Repeat for each field. Or use the **Order panel** to drag fields inline.",
-        ],
-        "PDFBP.UNDERSCORE_FILL": [
-            "In the **Tags panel**, find each paragraph with underscore fills.",
-            "If a form field overlaps, select the tag.",
-            "Press **Ctrl+E**, change Type to **Artifact**. Press **OK**.",
-        ],
-        "PDFUA.FORMS": [
-            "Select the form field in the document.",
-            "Open Properties (**Ctrl+E**), General tab.",
-            "Enter a descriptive **Tooltip** matching the visual label.",
-            "Press **OK**. Repeat for each field.",
-        ],
-        "PDFUA.IMG.ALT": [
-            "In the **Tags panel**, select the Figure tag.",
-            "Press **Ctrl+E** to open Properties.",
-            "Enter **Alternative Text** describing the image content.",
-            "For decorative images, change type to Artifact.",
-        ],
-        "PDFUA.HEADINGS": [
-            "In the **Tags panel**, select the heading tag.",
-            "Press **Ctrl+E** to open Properties.",
-            "Change the **Type** to the correct heading level (H1-H6).",
-            "Press **OK**.",
-        ],
-    }
-    return steps.get(rule_id, ["Follow the remediation guidance in the Findings section above."])
+    return rule_catalog.acrobat_fix_steps(rule_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1153,12 +942,7 @@ def generate_markdown(
     deep_count = 0
     if pdf is not None:
         consolidated = _consolidate_findings(findings)
-        deep_rules = {
-            "PDFUA.TITLE", "PDFBP.NO_HEADINGS", "PDFBP.NONSTD_NO_ALT",
-            "PDFBP.TABLE_SCOPE", "PDFBP.TABLE_HEADERS", "PDFBP.FLAT_STRUCTURE",
-            "PDFBP.FORMS_DETACHED", "PDFBP.UNDERSCORE_FILL", "PDFUA.FORMS",
-            "PDFUA.IMG.ALT", "PDFUA.HEADINGS",
-        }
+        deep_rules = rule_catalog.BUILTIN_RULE_IDS
         deep_count = sum(1 for c in consolidated if c["rule_id"] in deep_rules)
         if deep_count:
             lines.append(f"- **Deep analysis issues**: {deep_count}")
@@ -1179,7 +963,8 @@ def generate_markdown(
     # Built-in Checker Findings (consolidated table)
     # ------------------------------------------------------------------
     consolidated = _consolidate_findings(findings)
-    lines.append("## Built-in Checker Findings")
+    lines.append("<details open>")
+    lines.append("<summary><strong>Built-in Checker Findings</strong></summary>")
     lines.append("")
     lines.append("| Severity | Rule ID | WCAG | Page | Description |")
     lines.append("|----------|---------|------|------|-------------|")
@@ -1191,6 +976,8 @@ def generate_markdown(
             f"{entry['description']}{count_str} |"
         )
     lines.append("")
+    lines.append("</details>")
+    lines.append("")
 
     # ------------------------------------------------------------------
     # Deep Analysis Findings (when pdf available)
@@ -1198,7 +985,8 @@ def generate_markdown(
     if pdf is not None:
         deep_lines = _deep_analysis_section(findings, pdf, audience)
         if deep_lines:
-            lines.append("## Deep Analysis Findings")
+            lines.append("<details open>")
+            lines.append("<summary><strong>Deep Analysis Findings</strong></summary>")
             lines.append("")
             lines.append(
                 "The following issues were identified through structure tree "
@@ -1216,6 +1004,8 @@ def generate_markdown(
             lines.append("---")
             lines.append("")
             lines.extend(deep_lines)
+            lines.append("</details>")
+            lines.append("")
 
     # ------------------------------------------------------------------
     # Form Fields Assessment (when pdf available)
@@ -1223,7 +1013,16 @@ def generate_markdown(
     if pdf is not None:
         form_lines = _form_fields_assessment(pdf, findings)
         if form_lines:
-            lines.extend(form_lines)
+            lines.append("<details>")
+            lines.append("<summary><strong>Form Fields Assessment</strong></summary>")
+            lines.append("")
+            # Skip the first line (## heading) since we used summary instead
+            for fl in form_lines:
+                if fl.startswith("## Form Fields"):
+                    continue
+                lines.append(fl)
+            lines.append("</details>")
+            lines.append("")
 
     # ------------------------------------------------------------------
     # Reading Order Assessment (when pdf available)
@@ -1231,7 +1030,15 @@ def generate_markdown(
     if pdf is not None:
         ro_lines = _reading_order_assessment(pdf, findings)
         if ro_lines:
-            lines.extend(ro_lines)
+            lines.append("<details>")
+            lines.append("<summary><strong>Reading Order Assessment</strong></summary>")
+            lines.append("")
+            for rl in ro_lines:
+                if rl.startswith("## Reading Order"):
+                    continue
+                lines.append(rl)
+            lines.append("</details>")
+            lines.append("")
 
     # ------------------------------------------------------------------
     # Screen Reader Preview (when pdf available)
@@ -1239,7 +1046,8 @@ def generate_markdown(
     if pdf is not None:
         sr_lines = _simulate_screen_reader(pdf, findings)
         if sr_lines:
-            lines.append("## Screen Reader Preview (Simulated)")
+            lines.append("<details>")
+            lines.append("<summary><strong>Screen Reader Preview (Simulated)</strong></summary>")
             lines.append("")
             lines.append(
                 "This section approximates what a screen reader (NVDA, JAWS, "
@@ -1252,6 +1060,8 @@ def generate_markdown(
             for sr_line in sr_lines:
                 lines.append(sr_line)
             lines.append("```")
+            lines.append("")
+            lines.append("</details>")
             lines.append("")
 
     # ------------------------------------------------------------------
@@ -1269,7 +1079,8 @@ def generate_markdown(
         sev_findings = by_severity.get(severity, [])
         if not sev_findings:
             continue
-        lines.append(f"### {section_title}")
+        lines.append("<details>")
+        lines.append(f"<summary><strong>{section_title}</strong></summary>")
         lines.append("")
 
         # Dual-tool table format
@@ -1297,11 +1108,14 @@ def generate_markdown(
                 if fix_text:
                     lines.append(f"   - {fix_text}")
             lines.append("")
+        lines.append("</details>")
+        lines.append("")
 
     # ------------------------------------------------------------------
     # Accessibility Scorecard (with projected after-remediation)
     # ------------------------------------------------------------------
-    lines.append("## Accessibility Scorecard")
+    lines.append("<details open>")
+    lines.append("<summary><strong>Accessibility Scorecard</strong></summary>")
     lines.append("")
 
     if pdf is not None:
@@ -1346,6 +1160,8 @@ def generate_markdown(
         lines.append(f"| Errors | {error_count} |")
         lines.append(f"| Warnings | {warning_count} |")
         lines.append(f"| Tips | {tip_count} |")
+    lines.append("")
+    lines.append("</details>")
     lines.append("")
 
     return "\n".join(lines)

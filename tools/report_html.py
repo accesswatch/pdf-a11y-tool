@@ -195,6 +195,19 @@ details.drill-down summary:hover { background: #e5e7eb; }
 details.drill-down[open] summary { border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; }
 details.drill-down .drill-body { padding: 0.75rem 1rem; }
 
+/* Section-level accordion */
+details.section-accordion { margin: 1rem 0; border: 2px solid var(--border); border-radius: 8px; }
+details.section-accordion summary { cursor: pointer; padding: 0.8rem 1.2rem; font-size: 1.15rem; font-weight: 700; background: var(--surface); border-radius: 8px; list-style: revert; }
+details.section-accordion summary:hover { background: #dbeafe; }
+details.section-accordion[open] summary { border-bottom: 2px solid var(--border); border-radius: 8px 8px 0 0; background: #dbeafe; }
+details.section-accordion > .accordion-body { padding: 1rem 1.2rem; }
+
+/* Sprint-level accordion */
+details.sprint-accordion { margin: 0.5rem 0; border: 1px solid var(--border); border-radius: 6px; }
+details.sprint-accordion summary { cursor: pointer; padding: 0.6rem 1rem; font-weight: 600; background: #f8fafc; border-radius: 6px; }
+details.sprint-accordion summary:hover { background: #e5e7eb; }
+details.sprint-accordion[open] summary { border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; }
+
 /* Steps */
 .steps { counter-reset: step; list-style: none; padding-left: 0; }
 .steps li {
@@ -423,11 +436,84 @@ def _render_executive_summary(audit: dict, by_rule: dict, all_f: list) -> str:
     return "".join(lines)
 
 
+def _collect_fix_results(audit: dict) -> dict[str, list[dict]]:
+    """Collect all applied fix results from audit data, grouped by rule ID."""
+    results: dict[str, list[dict]] = {}
+    for fe in audit.get("files", []):
+        rem = fe.get("remediation", {})
+        if not rem.get("applied"):
+            continue
+        fname = fe["file"]
+        for fix in rem.get("fix_result", []):
+            rule = fix.get("rule", "")
+            if not rule:
+                continue
+            entry = {"file": fname, "status": fix.get("status", "?")}
+            if fix.get("detail"):
+                entry["detail"] = fix["detail"]
+            if fix.get("reason"):
+                entry["reason"] = fix["reason"]
+            results.setdefault(rule, []).append(entry)
+    return results
+
+
+def _render_applied_changes_html(fix_results: dict[str, list[dict]],
+                                  rule_ids: list[str]) -> str:
+    """Render 'Changes Applied' HTML block showing exact fix details for given rules."""
+    relevant: list[dict] = []
+    for rid in rule_ids:
+        relevant.extend(fix_results.get(rid, []))
+    if not relevant:
+        return ""
+
+    parts = [
+        '<details class="drill-down">\n'
+        '<summary>Changes Applied by the Toolkit</summary>\n'
+        '<div class="drill-body">\n'
+        '<p>The following changes were made automatically. '
+        '<strong>Review each change</strong> to confirm accuracy.</p>\n'
+    ]
+
+    fixed = [r for r in relevant if r["status"] == "fixed"]
+    skipped = [r for r in relevant if r["status"] == "skipped"]
+    failed = [r for r in relevant if r["status"] == "failed"]
+    needs_human = [r for r in relevant if r["status"] == "needs-human"]
+
+    if fixed:
+        parts.append('<h4>Applied</h4>\n<ul>\n')
+        for r in fixed:
+            detail = _h(r.get("detail", ""))
+            parts.append(f'  <li><code>{_h(r["file"])}</code> &mdash; {detail}</li>\n')
+        parts.append('</ul>\n')
+    if skipped:
+        parts.append('<h4>Skipped (already correct)</h4>\n<ul>\n')
+        for r in skipped:
+            reason = _h(r.get("reason", ""))
+            parts.append(f'  <li><code>{_h(r["file"])}</code> &mdash; {reason}</li>\n')
+        parts.append('</ul>\n')
+    if needs_human:
+        parts.append('<h4>Needs human review</h4>\n<ul>\n')
+        for r in needs_human:
+            detail = _h(r.get("detail", r.get("reason", "")))
+            parts.append(f'  <li><code>{_h(r["file"])}</code> &mdash; {detail}</li>\n')
+        parts.append('</ul>\n')
+    if failed:
+        parts.append('<h4>Failed</h4>\n<ul>\n')
+        for r in failed:
+            reason = _h(r.get("reason", ""))
+            parts.append(f'  <li><code>{_h(r["file"])}</code> &mdash; {reason}</li>\n')
+        parts.append('</ul>\n')
+
+    parts.append('</div>\n</details>\n')
+    return "".join(parts)
+
+
 def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
     s = audit["summary"]
     total = s["total_files"]
     types = _present_types(audit)
     rem_applied = audit.get("remediation", {}).get("enabled", False)
+    fix_results = _collect_fix_results(audit) if rem_applied else {}
     sprints = []
     fix_number = 1
 
@@ -437,21 +523,25 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
 
     def _make_sprint(title: str, badge_html: str, what_checks: str,
                      steps_html: str, why_matters: str,
-                     auto_badge: str = "") -> str:
+                     auto_badge: str = "", changes_html: str = "") -> str:
+        changes_section = changes_html if changes_html else ""
         return (
-            '<div class="sprint">\n'
-            f'  <h3 class="sprint-header">{_h(title)}</h3>\n'
-            f'  <div class="sprint-body">\n'
-            f'    {badge_html}\n'
-            f'    {auto_badge}'
-            f'    <h4>What This Checks</h4>\n<p>{what_checks}</p>\n'
-            f'    <details class="drill-down">\n'
-            f'      <summary>How to Fix (step-by-step instructions)</summary>\n'
-            f'      <div class="drill-body">\n{steps_html}\n      </div>\n'
-            f'    </details>\n'
-            f'    <h4>Why This Matters</h4>\n<p>{why_matters}</p>\n'
-            f'  </div>\n'
-            '</div>\n'
+            '<details class="sprint-accordion">\n'
+            f'  <summary>{_h(title)}</summary>\n'
+            '  <div class="sprint">\n'
+            f'    <div class="sprint-body">\n'
+            f'      {badge_html}\n'
+            f'      {auto_badge}'
+            f'      <h4>What This Checks</h4>\n<p>{what_checks}</p>\n'
+            f'      <details class="drill-down">\n'
+            f'        <summary>How to Fix (step-by-step instructions)</summary>\n'
+            f'        <div class="drill-body">\n{steps_html}\n        </div>\n'
+            f'      </details>\n'
+            f'      <h4>Why This Matters</h4>\n<p>{why_matters}</p>\n'
+            f'      {changes_section}'
+            f'    </div>\n'
+            '  </div>\n'
+            '</details>\n'
         )
 
     # ── Tagging ──
@@ -488,7 +578,8 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "is essentially a flat image to assistive technology."
             f'<br><strong>Reference:</strong> {_wcag_html("1.3.1")} | '
             f'{_ref_html("pdfua")} | {_ref_html("acrobat_a11y")}',
-            auto_badge=automation_summary_html(["PDFUA.STRUCT.TAGGED", "PDFUA.STRUCT.NOTREE"], n, total, remediation_applied=rem_applied)
+            auto_badge=automation_summary_html(["PDFUA.STRUCT.TAGGED", "PDFUA.STRUCT.NOTREE"], n, total, remediation_applied=rem_applied),
+            changes_html=_render_applied_changes_html(fix_results, ["PDFUA.STRUCT.TAGGED", "PDFUA.STRUCT.NOTREE"])
         ))
         fix_number += 1
 
@@ -551,7 +642,8 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "You <strong>must</strong> replace this placeholder with a meaningful, "
             "human-written title that accurately describes the document&rsquo;s content."
             "</div>",
-            auto_badge=automation_summary_html(active_title_rules, n, total, remediation_applied=rem_applied)
+            auto_badge=automation_summary_html(active_title_rules, n, total, remediation_applied=rem_applied),
+            changes_html=_render_applied_changes_html(fix_results, active_title_rules)
         ))
         fix_number += 1
 
@@ -594,7 +686,8 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "Screen readers use the language setting to choose the correct pronunciation engine. "
             "Wrong language = mispronounced or garbled text."
             f'<br><strong>Reference:</strong> {_wcag_html("3.1.1")}',
-            auto_badge=automation_summary_html(active_lang_rules, n, total, remediation_applied=rem_applied)
+            auto_badge=automation_summary_html(active_lang_rules, n, total, remediation_applied=rem_applied),
+            changes_html=_render_applied_changes_html(fix_results, active_lang_rules)
         ))
         fix_number += 1
 
@@ -635,7 +728,8 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "what information to enter. Labels and fields become disconnected even if "
             "they appear side by side visually."
             f'<br><strong>Reference:</strong> {_wcag_html("1.3.1")} | {_ref_html("webaim_forms")}',
-            auto_badge=automation_summary_html(["PDFUA.FORM.STRUCT", "PDFBP.FORM.STRUCT"], n, total, remediation_applied=rem_applied)
+            auto_badge=automation_summary_html(["PDFUA.FORM.STRUCT", "PDFBP.FORM.STRUCT"], n, total, remediation_applied=rem_applied),
+            changes_html=_render_applied_changes_html(fix_results, ["PDFUA.FORM.STRUCT", "PDFBP.FORM.STRUCT"])
         ))
         fix_number += 1
 
@@ -663,7 +757,8 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "users hear only the field type &mdash; e.g. &ldquo;Text field&rdquo; &mdash; with no "
             "indication of what to enter."
             f'<br><strong>Reference:</strong> {_wcag_html("4.1.2")} | {_wcag_html("3.3.2")} | {_ref_html("webaim_forms")}',
-            auto_badge=automation_summary_html(["PDFUA.FORM.TU"], n, total, remediation_applied=rem_applied)
+            auto_badge=automation_summary_html(["PDFUA.FORM.TU"], n, total, remediation_applied=rem_applied),
+            changes_html=_render_applied_changes_html(fix_results, ["PDFUA.FORM.TU"])
         ))
         fix_number += 1
 
@@ -688,7 +783,8 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "Slide titles are how screen reader users navigate presentations. "
             "Untitled slides force users to listen through all content to find what they need."
             f'<br><strong>Reference:</strong> {_wcag_html("2.4.2")}',
-            auto_badge=automation_summary_html(["PPTX.SLIDE.TITLE"], n, total, remediation_applied=rem_applied)
+            auto_badge=automation_summary_html(["PPTX.SLIDE.TITLE"], n, total, remediation_applied=rem_applied),
+            changes_html=_render_applied_changes_html(fix_results, ["PPTX.SLIDE.TITLE"])
         ))
         fix_number += 1
 
@@ -744,7 +840,8 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "Blind and low-vision users hear alt text read aloud instead of seeing the image. "
             "Generic or missing alt text leaves them without the information the image conveys."
             f'<br><strong>Reference:</strong> {_wcag_html("1.1.1")} | {_ref_html("webaim_alt")}',
-            auto_badge=automation_summary_html(active_alt_rules, n, total, remediation_applied=rem_applied)
+            auto_badge=automation_summary_html(active_alt_rules, n, total, remediation_applied=rem_applied),
+            changes_html=_render_applied_changes_html(fix_results, active_alt_rules)
         ))
         fix_number += 1
 
@@ -786,7 +883,8 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "Without headers, every cell sounds identical &mdash; "
             "e.g. &ldquo;Row 3, Column 2: Smith&rdquo; with no context."
             f'<br><strong>Reference:</strong> {_wcag_html("1.3.1")} | {_ref_html("webaim_tables")}',
-            auto_badge=automation_summary_html(active_table_rules, n, total, remediation_applied=rem_applied)
+            auto_badge=automation_summary_html(active_table_rules, n, total, remediation_applied=rem_applied),
+            changes_html=_render_applied_changes_html(fix_results, active_table_rules)
         ))
         fix_number += 1
 
@@ -819,7 +917,8 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "usability for all users.",
             "".join(body),
             "",
-            auto_badge=automation_summary_html(["PDFBP.DISPLAY.DOCTITLE", "PDFBP.NAV.TABORDER"], n, total, remediation_applied=rem_applied)
+            auto_badge=automation_summary_html(["PDFBP.DISPLAY.DOCTITLE", "PDFBP.NAV.TABORDER"], n, total, remediation_applied=rem_applied),
+            changes_html=_render_applied_changes_html(fix_results, ["PDFBP.DISPLAY.DOCTITLE", "PDFBP.NAV.TABORDER"])
         ))
         fix_number += 1
 
@@ -1566,11 +1665,9 @@ def _render_appendix_a(audit: dict) -> str:
             key=lambda x: (sev_order.get(x.get("severity", "Info"), 99), x.get("rule", "")))
 
         lines.append(
-            '<div class="file-section">\n'
-            '  <div class="file-header">\n'
-            f'    <h3 class="file-name">{_h(fname)}</h3>\n'
-            f'    <span>{_badge(grade)} {score}/100</span>\n'
-            '  </div>\n'
+            '<details class="sprint-accordion">\n'
+            f'  <summary>{_h(fname)} \u2014 {_badge(grade)} {score}/100</summary>\n'
+            '  <div class="file-section">\n'
             '  <div class="file-body">\n')
 
         rem = fe.get("remediation", {})
@@ -1616,7 +1713,7 @@ def _render_appendix_a(audit: dict) -> str:
         if alt_html:
             lines.append(alt_html)
 
-        lines.append('  </div>\n</div>\n')
+        lines.append('  </div>\n</div>\n</details>\n')
 
     lines.append('</section>\n')
     return "".join(lines)
@@ -1886,6 +1983,23 @@ def _render_appendix_e(audit: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Section accordion helper
+# ---------------------------------------------------------------------------
+
+def _wrap_section_accordion(html: str, summary: str, *, open: bool = False) -> str:
+    """Wrap a rendered section in a collapsible <details> accordion."""
+    if not html:
+        return ""
+    open_attr = " open" if open else ""
+    return (
+        f'<details class="section-accordion"{open_attr}>\n'
+        f'  <summary>{_h(summary)}</summary>\n'
+        f'  <div class="accordion-body">\n{html}\n  </div>\n'
+        '</details>\n'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main report builder
 # ---------------------------------------------------------------------------
 
@@ -1919,30 +2033,48 @@ def generate_report(audit: dict) -> str:
         ("appendix-e", "Appendix E — Glossary"),
     ])
 
+    # Render all sections, then wrap in accordions where appropriate
+    exec_summary = _render_executive_summary(audit, by_rule, all_f)
+    quick_fixes = _render_quick_fixes(by_rule, audit)
+    manual_review = _render_manual_review(by_rule, audit, all_f)
+    improvements = _render_additional_improvements(by_rule, audit)
+    summary_table = _render_summary_table(by_rule, audit, all_f)
+    per_file_table = _render_per_file_table(audit)
+    priority_plan = _render_priority_plan(by_rule, audit, all_f)
+    whats_working = _render_whats_working(all_f, audit)
+    time_estimate = _render_time_estimate(by_rule, audit)
+    final_assessment = _render_final_assessment(audit)
+    remediation = _render_remediation_results(audit)
+    appendix_a = _render_appendix_a(audit)
+    appendix_b = _render_appendix_b(all_f)
+    appendix_c = _render_appendix_c(audit)
+    appendix_d = _render_appendix_d(audit)
+    appendix_e = _render_appendix_e(audit)
+
     parts = [
         _render_html_head(audit),
         _render_banner(audit),
         _render_score_cards(audit, all_f),
         _render_toc(toc_items),
-        _render_executive_summary(audit, by_rule, all_f),
-        _render_quick_fixes(by_rule, audit),
-        _render_manual_review(by_rule, audit, all_f),
-        _render_additional_improvements(by_rule, audit),
-        _render_summary_table(by_rule, audit, all_f),
-        _render_per_file_table(audit),
-        _render_priority_plan(by_rule, audit, all_f),
-        _render_whats_working(all_f, audit),
-        _render_time_estimate(by_rule, audit),
-        _render_final_assessment(audit),
-        _render_remediation_results(audit),
+        _wrap_section_accordion(exec_summary, "1. Executive Summary", open=True),
+        _wrap_section_accordion(quick_fixes, "2. Start Here: Quick Fixes", open=True),
+        _wrap_section_accordion(manual_review, "3. Manual Review Required"),
+        _wrap_section_accordion(improvements, "4. Additional Improvements"),
+        _wrap_section_accordion(summary_table, "5. Summary of Findings"),
+        _wrap_section_accordion(per_file_table, "6. Per-Document Summary"),
+        _wrap_section_accordion(priority_plan, "7. Priority Action Plan", open=True),
+        _wrap_section_accordion(whats_working, "8. What's Already Working Well"),
+        _wrap_section_accordion(time_estimate, "9. Estimated Time to Resolve"),
+        final_assessment,  # Keep final assessment always visible
+        _wrap_section_accordion(remediation, "Remediation Results"),
         '<hr>\n<h2 id="technical-appendices">Technical Appendices</h2>\n'
         '<p class="muted">The sections below are for technical reviewers, accessibility auditors, '
         'and anyone who needs to understand the detailed methodology and complete findings.</p>\n<hr>\n',
-        _render_appendix_a(audit),
-        _render_appendix_b(all_f),
-        _render_appendix_c(audit),
-        _render_appendix_d(audit),
-        _render_appendix_e(audit),
+        _wrap_section_accordion(appendix_a, "Appendix A \u2014 Per-File Finding Inventory"),
+        _wrap_section_accordion(appendix_b, "Appendix B \u2014 Rule Reference"),
+        _wrap_section_accordion(appendix_c, "Appendix C \u2014 Standards and References"),
+        _wrap_section_accordion(appendix_d, "Appendix D \u2014 Tool Versions and Methodology"),
+        _wrap_section_accordion(appendix_e, "Appendix E \u2014 Glossary"),
         '\n<hr>\n<p class="muted"><em>Report generated by the Document Accessibility Audit Toolkit.</em></p>\n',
         '</body>\n</html>\n',
     ]

@@ -26,6 +26,10 @@ import datetime
 from pathlib import Path
 from collections import defaultdict
 
+# Import shared rule catalog (single source of truth for rule knowledge)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from pdf_a11y.core import rule_catalog  # noqa: E402
+
 try:
     from fix_tiers import automation_summary_md
     _HAS_FIX_TIERS = True
@@ -39,56 +43,15 @@ except ImportError:
 # Severity helpers
 # ---------------------------------------------------------------------------
 
-SEVERITY_EMOJI = {"Error": "🔴", "Warning": "🟡", "Info": "🔵"}
+SEVERITY_EMOJI = {"Error": "\U0001f534", "Warning": "\U0001f7e1", "Info": "\U0001f535"}
 
-# Authoritative reference URLs used throughout reports
-WCAG_LINKS = {
-    "1.1.1": ("Non-text Content", "https://www.w3.org/WAI/WCAG22/Understanding/non-text-content.html"),
-    "1.3.1": ("Info and Relationships", "https://www.w3.org/WAI/WCAG22/Understanding/info-and-relationships.html"),
-    "1.3.2": ("Meaningful Sequence", "https://www.w3.org/WAI/WCAG22/Understanding/meaningful-sequence.html"),
-    "1.4.1": ("Use of Color", "https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html"),
-    "1.4.3": ("Contrast (Minimum)", "https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html"),
-    "2.4.2": ("Page Titled", "https://www.w3.org/WAI/WCAG22/Understanding/page-titled.html"),
-    "2.4.3": ("Focus Order", "https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html"),
-    "2.4.4": ("Link Purpose (In Context)", "https://www.w3.org/WAI/WCAG22/Understanding/link-purpose-in-context.html"),
-    "2.4.5": ("Multiple Ways", "https://www.w3.org/WAI/WCAG22/Understanding/multiple-ways.html"),
-    "3.1.1": ("Language of Page", "https://www.w3.org/WAI/WCAG22/Understanding/language-of-page.html"),
-    "3.3.2": ("Labels or Instructions", "https://www.w3.org/WAI/WCAG22/Understanding/labels-or-instructions.html"),
-    "4.1.2": ("Name, Role, Value", "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html"),
-}
+# Re-export from shared catalog so report_html.py imports keep working
+WCAG_LINKS = rule_catalog.WCAG_LINKS
+REF_LINKS = rule_catalog.REF_LINKS
 
-# External tool and specification references
-REF_LINKS = {
-    "pdfua": "[PDF/UA (ISO 14289-1)](https://pdfa.org/resource/iso-14289-pdfua/)",
-    "matterhorn": "[Matterhorn Protocol](https://pdfa.org/resource/the-matterhorn-protocol/)",
-    "pac": "[PAC 2024 (PDF Accessibility Checker)](https://pac.pdf-accessibility.org/)",
-    "acrobat_a11y": "[Adobe Acrobat Pro Accessibility Guide](https://helpx.adobe.com/acrobat/using/creating-accessible-pdfs.html)",
-    "ms_word": "[Make your Word documents accessible (Microsoft)](https://support.microsoft.com/en-us/office/make-your-word-documents-accessible-to-people-with-disabilities-d9bf3683-87ac-47ea-b91a-78dcacb3c66d)",
-    "ms_excel": "[Make your Excel documents accessible (Microsoft)](https://support.microsoft.com/en-us/office/make-your-excel-documents-accessible-to-people-with-disabilities-6cc05fc5-1314-48b5-8eb3-683e49b3e593)",
-    "ms_pptx": "[Make your PowerPoint presentations accessible (Microsoft)](https://support.microsoft.com/en-us/office/make-your-powerpoint-presentations-accessible-to-people-with-disabilities-6f7772b2-2f33-4bd2-8ca7-dae3b2b3ef25)",
-    "webaim_pdf": "[WebAIM: PDF Accessibility](https://webaim.org/techniques/acrobat/)",
-    "webaim_alt": "[WebAIM: Alternative Text](https://webaim.org/techniques/alttext/)",
-    "webaim_tables": "[WebAIM: Creating Accessible Tables](https://webaim.org/techniques/tables/)",
-    "webaim_forms": "[WebAIM: Accessible Forms](https://webaim.org/techniques/forms/)",
-    "webaim_links": "[WebAIM: Links and Hypertext](https://webaim.org/techniques/hypertext/)",
-    "webaim_contrast": "[WebAIM Contrast Checker](https://webaim.org/resources/contrastchecker/)",
-}
-
-
-def _wcag_md(criterion: str) -> str:
-    """Return a markdown link for a WCAG criterion, e.g. '1.3.1'."""
-    if criterion in WCAG_LINKS:
-        name, url = WCAG_LINKS[criterion]
-        return f"[WCAG {criterion}: {name}]({url})"
-    return f"WCAG {criterion}"
-
-
-def _wcag_html(criterion: str) -> str:
-    """Return an HTML link for a WCAG criterion."""
-    if criterion in WCAG_LINKS:
-        name, url = WCAG_LINKS[criterion]
-        return f'<a href="{url}">WCAG {criterion}: {name}</a>'
-    return f"WCAG {criterion}"
+# Delegate to catalog helpers
+_wcag_md = rule_catalog.wcag_md
+_wcag_html = rule_catalog.wcag_html
 
 
 def _ref_html(key: str) -> str:
@@ -100,128 +63,12 @@ def _ref_html(key: str) -> str:
         return f'<a href="{m.group(2)}">{m.group(1)}</a>'
     return md
 
-RULE_REFERENCE = {
-    # ── PDF ────────────────────────────────────────────────────────────────
-    "PDFUA.METADATA.TITLE":     ("PDF/UA §5.2",     "WCAG 2.4.2",  "Error",   "07-001", "Document title not set in File Properties."),
-    "PDFUA.METADATA.LANG":      ("PDF/UA §5.3",     "WCAG 3.1.1",  "Error",   "06-001", "Document language not set."),
-    "PDFUA.METADATA.LANG.REVIEW":("PDF/UA §5.3",    "WCAG 3.1.1",  "Warning", "06-001", "Document language set but should be verified."),
-    "PDFBP.DISPLAY.DOCTITLE":   ("PDF/UA Best Practice","WCAG 2.4.2","Warning","07-001", "ViewerPreferences/DisplayDocTitle not enabled."),
-    "PDFUA.STRUCT.TAGGED":      ("PDF/UA §5.1",     "WCAG 1.3.1",  "Error",   "01-001", "Document is not tagged — structure inaccessible."),
-    "PDFQ.METADATA.PDFUA":      ("PDF/UA §5.1",     "—",           "Info",    "—",      "PDF/UA conformance identifier not present."),
-    "PDFUA.STRUCT.NOTREE":      ("PDF/UA §5.1",     "WCAG 1.3.1",  "Error",   "01-001", "Tag tree absent or empty."),
-    "PDFUA.FORM.STRUCT":        ("PDF/UA §6.6",     "WCAG 1.3.1",  "Error",   "26-002", "Form fields not linked into the structure tree."),
-    "PDFBP.FORM.STRUCT":        ("PDF/UA Best Practice","WCAG 1.3.1","Warning","26-002", "Some form fields positioned after all content in tag tree."),
-    "PDFBP.LIST.CONTINUATION":  ("PDF/UA Best Practice","WCAG 1.3.1","Warning","—",     "List elements split across page boundaries."),
-    "PDFQ.NONSTD.ROLE":         ("PDF/UA §5.4",     "WCAG 1.3.1",  "Info",    "01-007", "Non-standard roles not mapped in RoleMap."),
-    "PDFBP.HEADING.SKIP":       ("WCAG Technique PDF9","WCAG 1.3.1","Error",   "—",     "Heading levels skip one or more levels."),
-    "PDFUA.TABLE.HEADERS":      ("PDF/UA §6.6",     "WCAG 1.3.1",  "Error",   "15-003", "Table has no header cells (/TH elements)."),
-    "PDFUA.IMG.ALT":             ("PDF/UA §6.5",     "WCAG 1.1.1",  "Error",   "13-004", "Figure element missing /Alt text — image has no alternative text."),
-    "PDFBP.ORDER.FIGURE":       ("PDF/UA §6.5",     "WCAG 1.3.2",  "Warning", "09-004", "Figure not immediately followed by its Caption in tag tree."),
-    "PDFBP.ORDER.MCID":         ("PDF/UA §6.1",     "WCAG 1.3.2",  "Warning", "09-004", "Structure-tree MCID order significantly mismatches content-stream paint order."),
-    "PDFQ.ORDER.MANUAL":        ("PDF/UA §6.1",     "WCAG 1.3.2",  "Info",    "09-004", "Reading order must be manually verified with Acrobat Pro or a screen reader."),
-    "PDFUA.FORM.TU":            ("PDF/UA §6.6",     "WCAG 1.3.1",  "Error",   "26-001", "Form field missing Tooltip (/TU) — screen readers have no label."),
-    "PDFBP.FORMS.REQUIRED_LABEL":("WebAIM Forms",   "WCAG 3.3.2",  "Warning", "—",     "Required field not labelled as required in Tooltip."),
-    "PDFBP.FORMS.BUTTON_TOOLTIP":("WebAIM Forms",   "WCAG 4.1.2",  "Warning", "—",     "Push button has Tooltip — tooltip overrides button label for screen readers."),
-    "PDFBP.FORMS.RADIO_TOOLTIP": ("WebAIM Forms",   "WCAG 1.3.1",  "Warning", "—",     "Radio buttons in a group have inconsistent Tooltip text."),
-    "PDFBP.NAV.TABORDER":       ("PDF/UA Best Practice","WCAG 2.4.3","Warning","—",    "Tab order not set to 'Use Document Structure'."),
-    "PDFBP.FORM.ORPHAN":        ("pypdf docs",      "WCAG 1.3.1",  "Warning", "26-002", "Widget annotation not linked to an AcroForm field."),
-    "PDFBP.FORMS.NOACROFORM":   ("PDF/UA §6.6",     "WCAG 1.3.1",  "Info",    "—",     "No AcroForm fields found — document may be image-based or print-only."),
-    # ── DOCX ───────────────────────────────────────────────────────────────
-    "DOCX-META.TITLE":          ("WCAG 2.4.2",      "WCAG 2.4.2",  "Error",   "—",     "Word document title not set in core properties."),
-    "DOCX-META.LANG":           ("WCAG 3.1.1",      "WCAG 3.1.1",  "Error",   "—",     "Document language not set."),
-    "DOCX-STRUCT.HEADINGS":     ("WCAG 1.3.1",      "WCAG 1.3.1",  "Error",   "—",     "Document has body text but no Heading styles."),
-    "DOCX-STRUCT.HEADINGSKIP":  ("WCAG 1.3.1",      "WCAG 1.3.1",  "Error",   "—",     "Heading levels skip one or more levels."),
-    "DOCX-IMG.ALT":             ("WCAG 1.1.1",      "WCAG 1.1.1",  "Error",   "—",     "Image missing alternative text."),
-    "DOCX-IMG.ALT_QUALITY":     ("WCAG 1.1.1",      "WCAG 1.1.1",  "Warning", "—",     "Image alt text appears generic or auto-generated."),
-    "DOCX-TABLE.HEADERS":       ("WCAG 1.3.1",      "WCAG 1.3.1",  "Error",   "—",     "Table has no header row designation."),
-    "DOCX-TABLE.MERGE":         ("WCAG 1.3.1",      "WCAG 1.3.1",  "Warning", "—",     "Table contains merged cells — may disorient screen readers."),
-    "DOCX-LINK.DESCRIPTIVE":    ("WCAG 2.4.4",      "WCAG 2.4.4",  "Warning", "—",     "Hyperlink text is non-descriptive (e.g. 'click here')."),
-    "DOCX-STRUCT.EMPTYPARA":    ("WCAG 1.3.1",      "WCAG 1.3.1",  "Info",    "—",     "Document uses empty paragraphs for spacing instead of paragraph spacing styles."),
-    "DOCX-IMG.ALT_FLOAT":       ("WCAG 1.1.1",      "WCAG 1.1.1",  "Error",   "—",     "Floating image missing alternative text."),
-    "DOCX-LIST.SEMANTIC":        ("WCAG 1.3.1",      "WCAG 1.3.1",  "Warning", "—",     "Manual lists used without proper list styles."),
-    "DOCX-TABLE.NESTED":         ("WCAG 1.3.1",      "WCAG 1.3.1",  "Error",   "—",     "Nested table detected — may confuse screen readers."),
-    "DOCX-STRUCT.TOC":           ("WCAG 2.4.5",      "WCAG 2.4.5",  "Warning", "—",     "No table of contents in a long document."),
-    "DOCX-REVIEW.TRACKED":       ("WCAG 1.3.1",      "WCAG 1.3.1",  "Warning", "—",     "Unresolved tracked changes present."),
-    "DOCX-STRUCT.HDRFTR":        ("WCAG 1.3.2",      "WCAG 1.3.2",  "Info",    "—",     "Header/footer contains information-bearing content."),
-    "DOCX-STRUCT.FOOTNOTES":     ("WCAG 2.4.1",      "WCAG 2.4.1",  "Info",    "—",     "Heavy footnote/endnote usage."),
-    # ── XLSX ───────────────────────────────────────────────────────────────
-    "XLSX.META.TITLE":          ("Section 508",     "WCAG 2.4.2",  "Error",   "—",     "Workbook title not set in document properties."),
-    "XLSX.NAV.SHEET_NAMES":     ("Section 508",     "WCAG 2.4.2",  "Warning", "—",     "Sheet tab(s) use default generic names (Sheet1, etc.)."),
-    "XLSX.NAV.SHEET_DUP":       ("Section 508",     "WCAG 2.4.2",  "Warning", "—",     "Duplicate sheet tab names found."),
-    "XLSX.NAV.FREEZE_PANES":    ("WebAIM",          "WCAG 1.3.1",  "Info",    "—",     "Sheet has data rows/columns but no frozen header pane."),
-    "XLSX.TABLE.NAMED":         ("Section 508",     "WCAG 1.3.1",  "Warning", "—",     "Data range not defined as a named Excel Table object."),
-    "XLSX.TABLE.HEADER":        ("Section 508",     "WCAG 1.3.1",  "Error",   "—",     "Excel Table has header row turned off."),
-    "XLSX.LAYOUT.MERGED":       ("WebAIM",          "WCAG 1.3.1",  "Warning", "—",     "Merged cells detected — may break screen reader cell navigation."),
-    "XLSX.LAYOUT.SPACING":      ("WebAIM",          "WCAG 1.3.1",  "Info",    "—",     "Empty rows used for visual spacing instead of row height settings."),
-    "XLSX.LINKS.TEXT":          ("WCAG 2.4.4",      "WCAG 2.4.4",  "Warning", "—",     "Hyperlink display text is the raw URL instead of descriptive text."),
-    "XLSX.COLOR.ONLY":          ("WCAG 1.4.1",      "WCAG 1.4.1",  "Warning", "—",     "Cells differentiated by fill color only — no text or symbol alternative."),
-    "XLSX.CHART.ALT":            ("WCAG 1.1.1",      "WCAG 1.1.1",  "Error",   "—",     "Chart missing alternative text."),
-    "XLSX.IMG.ALT":              ("WCAG 1.1.1",      "WCAG 1.1.1",  "Error",   "—",     "Image missing alternative text."),
-    "XLSX.LAYOUT.HIDDEN":        ("WCAG 1.3.1",      "WCAG 1.3.1",  "Warning", "—",     "Hidden rows, columns, or sheets detected."),
-    "XLSX.PROTECT.SHEET":        ("WCAG 2.1.1",      "WCAG 2.1.1",  "Info",    "—",     "Protected sheet — ensure all interactive elements remain operable."),
-    "XLSX.DATA.VALIDATION":      ("WCAG 3.3.2",      "WCAG 3.3.2",  "Warning", "—",     "Data validation rule without input message."),
-    # ── PPTX ───────────────────────────────────────────────────────────────
-    "PPTX.META.TITLE":          ("Section 508",     "WCAG 2.4.2",  "Error",   "—",     "Presentation title not set in core properties."),
-    "PPTX.SLIDE.TITLE":         ("Section 508",     "WCAG 2.4.2",  "Error",   "—",     "Slide(s) missing a title placeholder."),
-    "PPTX.SLIDE.TITLE_DUP":     ("Section 508",     "WCAG 2.4.2",  "Warning", "—",     "Multiple slides share the same title."),
-    "PPTX.SLIDE.NOTES":         ("WCAG 1.2.1",      "WCAG 1.2.1",  "Info",    "—",     "Slides contain no speaker notes — may miss supplementary context."),
-    "PPTX.ORDER.TITLE_FIRST":   ("Section 508",     "WCAG 1.3.2",  "Warning", "—",     "Title placeholder is not first in AT reading order on one or more slides."),
-    "PPTX.ORDER.COLUMNS":       ("WCAG 1.3.2",      "WCAG 1.3.2",  "Info",    "—",     "Two-column layout detected — reading order must be manually verified."),
-    "PPTX.ORDER.VERIFY":        ("WCAG 1.3.2",      "WCAG 1.3.2",  "Info",    "—",     "Reading order requires manual verification using the Selection Pane."),
-    "PPTX.IMG.ALT":             ("WCAG 1.1.1",      "WCAG 1.1.1",  "Error",   "—",     "Image missing alternative text or marked as decorative without review."),
-    "PPTX.IMG.ALT_QUALITY":     ("WCAG 1.1.1",      "WCAG 1.1.1",  "Warning", "—",     "Image alt text appears generic or placeholder."),
-    "PPTX.TABLE.HEADER":        ("WCAG 1.3.1",      "WCAG 1.3.1",  "Error",   "—",     "Table missing designated header row."),
-    "PPTX.MEDIA.CAPTIONS":      ("WCAG 1.2.2",      "WCAG 1.2.2",  "Warning", "—",     "Presentation contains media objects — captions/transcripts must be verified."),
-    "PPTX.SECTION.NAME":        ("Section 508",     "WCAG 2.4.1",  "Info",    "—",     "Presentation section(s) using default names."),
-    "PPTX.SECTION.DUP":         ("Section 508",     "WCAG 2.4.1",  "Warning", "—",     "Duplicate section names found."),
-    "PPTX.LINKS.TEXT":          ("WCAG 2.4.4",      "WCAG 2.4.4",  "Warning", "—",     "Hyperlink display text is the raw URL."),
-    "PPTX.META.LANG":            ("WCAG 3.1.1",      "WCAG 3.1.1",  "Error",   "—",     "Presentation language not set."),
-    "PPTX.GROUP.ALT":            ("WCAG 1.1.1",      "WCAG 1.1.1",  "Error",   "—",     "Grouped shape missing alternative text."),
-    "PPTX.TRANSITION.AUTO":      ("WCAG 2.2.1",      "WCAG 2.2.1",  "Warning", "—",     "Auto-advance slide transition detected."),
-    "PPTX.ANIM.EXCESSIVE":       ("WCAG 2.3.3",      "WCAG 2.3.3",  "Info",    "—",     "Excessive animations on slide."),
-    # ── EPUB ───────────────────────────────────────────────────────────────
-    "EPUB-E001":                 ("EPUB A11y 1.1",   "WCAG 2.4.2",  "Error",   "—",     "Document title (dc:title) missing."),
-    "EPUB-E002":                 ("EPUB A11y 1.1",   "—",           "Error",   "—",     "Unique identifier (dc:identifier) missing."),
-    "EPUB-E003":                 ("EPUB A11y 1.1",   "WCAG 3.1.1",  "Error",   "—",     "Document language (dc:language) missing."),
-    "EPUB-E004":                 ("EPUB A11y 1.1",   "WCAG 2.4.5",  "Error",   "—",     "Table of contents (nav toc / NCX) missing."),
-    "EPUB-E005":                 ("EPUB A11y 1.1",   "WCAG 1.1.1",  "Error",   "—",     "Image/SVG/MathML missing alt text."),
-    "EPUB-E006":                 ("EPUB A11y 1.1",   "WCAG 1.3.2",  "Error",   "—",     "Spine reading order issue."),
-    "EPUB-E007":                 ("EPUB A11y 1.1",   "—",           "Error",   "—",     "Accessibility metadata missing."),
-    "EPUB-W001":                 ("EPUB A11y 1.1",   "—",           "Warning", "—",     "Navigation page-list absent."),
-    "EPUB-W002":                 ("EPUB A11y 1.1",   "WCAG 2.4.1",  "Warning", "—",     "Navigation landmarks absent."),
-    "EPUB-W003":                 ("EPUB A11y 1.1",   "WCAG 2.4.6",  "Error",   "—",     "Heading level skipped in content."),
-    "EPUB-W004":                 ("EPUB A11y 1.1",   "WCAG 1.3.1",  "Error",   "—",     "Table missing header elements."),
-    "EPUB-W005":                 ("EPUB A11y 1.1",   "WCAG 2.4.4",  "Warning", "—",     "Ambiguous link text."),
-    "EPUB-W006":                 ("EPUB A11y 1.1",   "WCAG 1.4.1",  "Warning", "—",     "Fixed-layout ePub detected."),
-    "EPUB-T001":                 ("EPUB A11y 1.1",   "—",           "Info",    "—",     "Accessibility summary is brief."),
-    "EPUB-T002":                 ("EPUB A11y 1.1",   "—",           "Info",    "—",     "Author (dc:creator) missing."),
-    "EPUB-T003":                 ("EPUB A11y 1.1",   "—",           "Info",    "—",     "Description (dc:description) missing."),
-    # ── Markdown ───────────────────────────────────────────────────────────
-    "MD-A11Y.LINK.AMBIGUOUS":    ("WCAG 2.4.4",      "WCAG 2.4.4",  "Error",   "—",     "Ambiguous link text (e.g. 'click here', 'read more')."),
-    "MD-A11Y.LINK.BARE_URL":     ("WCAG 2.4.4",      "WCAG 2.4.4",  "Warning", "—",     "URL used as link text instead of descriptive text."),
-    "MD-A11Y.LINK.FILETYPE":     ("WCAG 2.4.4",      "WCAG 2.4.4",  "Warning", "—",     "Download link missing file type indicator."),
-    "MD-A11Y.IMG.ALT_MISSING":   ("WCAG 1.1.1",      "WCAG 1.1.1",  "Error",   "—",     "Image missing alt text."),
-    "MD-A11Y.IMG.ALT_QUALITY":   ("WCAG 1.1.1",      "WCAG 1.1.1",  "Warning", "—",     "Generic or filename-based alt text."),
-    "MD-A11Y.HEADING.MULTIPLE_H1":("WCAG 1.3.1",     "WCAG 1.3.1",  "Warning", "—",     "Multiple H1 headings in document."),
-    "MD-A11Y.HEADING.SKIP":      ("WCAG 1.3.1",      "WCAG 1.3.1",  "Error",   "—",     "Heading level skipped."),
-    "MD-A11Y.HEADING.NO_H1":     ("WCAG 1.3.1",      "WCAG 1.3.1",  "Warning", "—",     "No H1 heading in document."),
-    "MD-A11Y.TABLE.NO_DESC":     ("WCAG 1.3.1",      "WCAG 1.3.1",  "Warning", "—",     "Table without preceding description."),
-    "MD-A11Y.TABLE.EMPTY_HEADER":("WCAG 1.3.1",      "WCAG 1.3.1",  "Warning", "—",     "Empty table header cell."),
-    "MD-A11Y.EMOJI.HEADING":     ("WCAG 1.3.3",      "WCAG 1.3.3",  "Warning", "—",     "Emoji in heading."),
-    "MD-A11Y.EMOJI.CONSECUTIVE": ("WCAG 1.3.3",      "WCAG 1.3.3",  "Info",    "—",     "Consecutive emoji sequence."),
-    "MD-A11Y.DIAGRAM.MERMAID":   ("WCAG 1.1.1",      "WCAG 1.1.1",  "Error",   "—",     "Mermaid diagram without text alternative."),
-    "MD-A11Y.DIAGRAM.ASCII":     ("WCAG 1.1.1",      "WCAG 1.1.1",  "Warning", "—",     "ASCII diagram without text alternative."),
-}
+# Re-export from shared catalog
+RULE_REFERENCE = rule_catalog.RULE_REFERENCE
 
-READING_ORDER_RULES = {
-    "PDFBP.ORDER.FIGURE", "PDFBP.ORDER.MCID", "PDFQ.ORDER.MANUAL",
-    "PPTX.ORDER.TITLE_FIRST", "PPTX.ORDER.COLUMNS", "PPTX.ORDER.VERIFY",
-}
+READING_ORDER_RULES = rule_catalog.READING_ORDER_RULES
 
-MANUAL_REVIEW_RULES = {
-    r for r, meta in RULE_REFERENCE.items()
-    if "manual" in meta[4].lower() or "verify" in meta[4].lower()
-} | READING_ORDER_RULES | {"PDFQ.ORDER.MANUAL", "PPTX.ORDER.VERIFY"}
+MANUAL_REVIEW_RULES = rule_catalog.MANUAL_REVIEW_RULES
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +222,86 @@ def _render_executive_summary(audit: dict, by_rule: dict, all_f: list) -> str:
     return "\n".join(lines)
 
 
+def _collect_fix_results(audit: dict) -> dict[str, list[dict]]:
+    """Collect all applied fix results from audit data, grouped by rule ID.
+
+    Returns a dict mapping rule_id -> list of fix detail dicts, e.g.:
+        {"PDFUA.METADATA.TITLE": [
+            {"file": "doc.pdf", "status": "fixed", "detail": "Set title to 'My Doc'"},
+            {"file": "other.pdf", "status": "skipped", "reason": "Title already set"},
+        ]}
+    """
+    results: dict[str, list[dict]] = {}
+    for fe in audit.get("files", []):
+        rem = fe.get("remediation", {})
+        if not rem.get("applied"):
+            continue
+        fname = fe["file"]
+        for fix in rem.get("fix_result", []):
+            rule = fix.get("rule", "")
+            if not rule:
+                continue
+            entry = {"file": fname, "status": fix.get("status", "?")}
+            if fix.get("detail"):
+                entry["detail"] = fix["detail"]
+            if fix.get("reason"):
+                entry["reason"] = fix["reason"]
+            results.setdefault(rule, []).append(entry)
+    return results
+
+
+def _render_applied_changes_md(fix_results: dict[str, list[dict]],
+                                rule_ids: list[str]) -> str:
+    """Render a 'Changes Applied' block showing exact fix details for given rules.
+
+    Only rendered when there are actual fix results. Shows the exact text of
+    what was changed per file, so users can verify the automated modifications.
+    """
+    relevant: list[dict] = []
+    for rid in rule_ids:
+        relevant.extend(fix_results.get(rid, []))
+    if not relevant:
+        return ""
+
+    lines = [
+        "#### Changes Applied by the Toolkit\n",
+        "The following changes were made automatically. "
+        "**Review each change** to confirm accuracy.\n",
+    ]
+    # Group by status
+    fixed = [r for r in relevant if r["status"] == "fixed"]
+    skipped = [r for r in relevant if r["status"] == "skipped"]
+    failed = [r for r in relevant if r["status"] == "failed"]
+    needs_human = [r for r in relevant if r["status"] == "needs-human"]
+
+    if fixed:
+        lines.append("**Applied:**")
+        for r in fixed:
+            detail = r.get("detail", "")
+            lines.append(f"- `{r['file']}` — {detail}")
+        lines.append("")
+    if skipped:
+        lines.append("**Skipped (already correct):**")
+        for r in skipped:
+            reason = r.get("reason", "")
+            lines.append(f"- `{r['file']}` — {reason}")
+        lines.append("")
+    if needs_human:
+        lines.append("**Needs human review:**")
+        for r in needs_human:
+            detail = r.get("detail", r.get("reason", ""))
+            lines.append(f"- `{r['file']}` — {detail}")
+        lines.append("")
+    if failed:
+        lines.append("**Failed:**")
+        for r in failed:
+            reason = r.get("reason", "")
+            lines.append(f"- `{r['file']}` — {reason}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
     """Generate prioritised step-by-step fix instructions for common errors.
 
@@ -388,11 +315,13 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
       #### What This Checks  — plain-English rule explanation
       #### How to Fix        — format-specific resolution steps
       #### Why This Matters   — impact on real users
+      #### Changes Applied   — (when remediation was run) exact details of changes
     """
     s = audit["summary"]
     total = s["total_files"]
     types = _present_types(audit)
     rem_applied = audit.get("remediation", {}).get("enabled", False)
+    fix_results = _collect_fix_results(audit) if rem_applied else {}
     sections = []
 
     fix_number = 1
@@ -431,6 +360,9 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "paragraphs, lists, tables, and form fields are all invisible. An untagged PDF "
             "is essentially a flat image to assistive technology.\n",
         ]
+        changes = _render_applied_changes_md(fix_results, ["PDFUA.STRUCT.TAGGED", "PDFUA.STRUCT.NOTREE"])
+        if changes:
+            block.append(changes)
         sections.append("\n".join(block))
         fix_number += 1
 
@@ -505,6 +437,9 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "document title`). You **must** replace this placeholder with a meaningful, "
             "human-written title that accurately describes the document's content.\n",
         ]
+        changes = _render_applied_changes_md(fix_results, active_title_rules)
+        if changes:
+            block.append(changes)
         sections.append("\n".join(block))
         fix_number += 1
 
@@ -562,6 +497,9 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "correct pronunciation engine. Wrong language = mispronounced or garbled text.\n",
             f"**Reference:** {_wcag_md('3.1.1')}\n",
         ]
+        changes = _render_applied_changes_md(fix_results, active_lang_rules)
+        if changes:
+            block.append(changes)
         sections.append("\n".join(block))
         fix_number += 1
 
@@ -600,6 +538,9 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "Labels and fields become disconnected even if they appear side by side visually.\n",
             f"**Reference:** {_wcag_md('1.3.1')} | {REF_LINKS['webaim_forms']}\n",
         ]
+        changes = _render_applied_changes_md(fix_results, ["PDFUA.FORM.STRUCT", "PDFBP.FORM.STRUCT"])
+        if changes:
+            block.append(changes)
         sections.append("\n".join(block))
         fix_number += 1
 
@@ -630,6 +571,9 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "indication of what to enter.\n",
             f"**Reference:** {_wcag_md('4.1.2')} | {_wcag_md('3.3.2')} | {REF_LINKS['webaim_forms']}\n",
         ]
+        changes = _render_applied_changes_md(fix_results, ["PDFUA.FORM.TU"])
+        if changes:
+            block.append(changes)
         sections.append("\n".join(block))
         fix_number += 1
 
@@ -657,6 +601,9 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "find what they need.\n",
             f"**Reference:** {_wcag_md('2.4.2')} | {REF_LINKS['ms_pptx']}\n",
         ]
+        changes = _render_applied_changes_md(fix_results, ["PPTX.SLIDE.TITLE"])
+        if changes:
+            block.append(changes)
         sections.append("\n".join(block))
         fix_number += 1
 
@@ -727,6 +674,9 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "the information the image conveys.\n",
             f"**Reference:** {_wcag_md('1.1.1')} | {REF_LINKS['webaim_alt']}\n",
         ]
+        changes = _render_applied_changes_md(fix_results, active_alt_rules)
+        if changes:
+            block.append(changes)
         sections.append("\n".join(block))
         fix_number += 1
 
@@ -784,6 +734,9 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
             "*'Row 3, Column 2: Smith'* with no context.\n",
             f"**Reference:** {_wcag_md('1.3.1')} | {REF_LINKS['webaim_tables']}\n",
         ]
+        changes = _render_applied_changes_md(fix_results, active_table_rules)
+        if changes:
+            block.append(changes)
         sections.append("\n".join(block))
         fix_number += 1
 
@@ -819,6 +772,9 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
                 "3. Select **Use Document Structure**",
                 "4. Repeat for all pages → Save As\n",
             ]
+        changes = _render_applied_changes_md(fix_results, ["PDFBP.DISPLAY.DOCTITLE", "PDFBP.NAV.TABORDER"])
+        if changes:
+            block.append(changes)
         sections.append("\n".join(block))
         fix_number += 1
 
@@ -859,7 +815,18 @@ def _render_quick_fixes(by_rule: dict, audit: dict) -> str:
               + tool_note
               + auto_note
               + "---\n\n")
-    return header + "\n---\n\n".join(sections) + "\n---\n"
+
+    # Wrap each fix section in an accordion
+    accordion_sections = []
+    for sec in sections:
+        sec_lines = sec.split("\n")
+        # Extract the ### heading as the summary
+        heading = sec_lines[0].lstrip("# ").strip() if sec_lines else "Fix"
+        body = "\n".join(sec_lines[1:])
+        accordion_sections.append(
+            f"<details>\n<summary><strong>{heading}</strong></summary>\n{body}\n</details>"
+        )
+    return header + "\n\n".join(accordion_sections) + "\n---\n"
 
 
 def _render_next_steps(audit: dict) -> str:
@@ -1870,31 +1837,65 @@ def _render_appendix_e(audit: dict) -> str:
 # Main report builder
 # ---------------------------------------------------------------------------
 
+def _wrap_accordion(content: str, summary: str, *, open: bool = False) -> str:
+    """Wrap a Markdown section in a <details>/<summary> accordion."""
+    if not content or not content.strip():
+        return ""
+    open_attr = " open" if open else ""
+    # Strip the leading ## heading if it matches the summary text
+    lines = content.split("\n")
+    # Remove the first line if it's a heading (## or ### style)
+    body_lines = []
+    skipped_heading = False
+    for line in lines:
+        if not skipped_heading and line.startswith("## "):
+            skipped_heading = True
+            continue
+        body_lines.append(line)
+    body = "\n".join(body_lines)
+    return f"<details{open_attr}>\n<summary><strong>{summary}</strong></summary>\n{body}\n</details>\n"
+
+
 def generate_report(audit: dict) -> str:
     all_f = _all_findings(audit)
     by_rule = _findings_by_rule(all_f)
+
+    # Render raw sections
+    manual_review = _render_manual_review(by_rule, audit, all_f)
+    additional = _render_additional_improvements(by_rule, audit)
+    summary_table = _render_summary_table(by_rule, audit, all_f)
+    priority_plan = _render_priority_plan(by_rule, audit, all_f)
+    whats_working = _render_whats_working(all_f, audit)
+    time_estimate = _render_time_estimate(by_rule, audit)
+    final_assessment = _render_final_assessment(audit)
+    remediation = _render_remediation_results(audit)
+    appendix_a = _render_appendix_a(audit)
+    appendix_b = _render_appendix_b(all_f)
+    appendix_c = _render_appendix_c(audit)
+    appendix_d = _render_appendix_d(audit)
+    appendix_e = _render_appendix_e(audit)
 
     sections = [
         _render_header(audit),
         _render_executive_summary(audit, by_rule, all_f),
         _render_quick_fixes(by_rule, audit),
         _render_next_steps(audit),
-        _render_manual_review(by_rule, audit, all_f),
-        _render_additional_improvements(by_rule, audit),
-        _render_summary_table(by_rule, audit, all_f),
-        _render_priority_plan(by_rule, audit, all_f),
-        _render_whats_working(all_f, audit),
-        _render_time_estimate(by_rule, audit),
-        _render_final_assessment(audit),
-        _render_remediation_results(audit),
+        _wrap_accordion(manual_review, "Manual Review Required", open=True),
+        _wrap_accordion(additional, "Additional Improvements"),
+        _wrap_accordion(summary_table, "Summary of Findings"),
+        _wrap_accordion(priority_plan, "Priority Action Plan", open=True),
+        _wrap_accordion(whats_working, "What's Already Working Well"),
+        _wrap_accordion(time_estimate, "Estimated Time to Resolve Issues"),
+        final_assessment,  # Keep open -- it's the conclusion
+        _wrap_accordion(remediation, "Remediation Results") if remediation else "",
         "\n---\n\n# Technical Appendices\n",
         "_The sections below are for technical reviewers, accessibility auditors, and "
         "anyone who needs to understand the detailed methodology and complete findings._\n\n---\n",
-        _render_appendix_a(audit),
-        _render_appendix_b(all_f),
-        _render_appendix_c(audit),
-        _render_appendix_d(audit),
-        _render_appendix_e(audit),
+        _wrap_accordion(appendix_a, "Appendix A -- Per-File Finding Inventory"),
+        _wrap_accordion(appendix_b, "Appendix B -- Rule Reference"),
+        _wrap_accordion(appendix_c, "Appendix C -- Standards and References"),
+        _wrap_accordion(appendix_d, "Appendix D -- Tool Versions and Methodology"),
+        _wrap_accordion(appendix_e, "Appendix E -- Glossary"),
     ]
 
     return "\n".join(s for s in sections if s)
