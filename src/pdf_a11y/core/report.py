@@ -32,6 +32,17 @@ class ReportFormat(enum.Enum):
     CSV = "csv"
 
 
+class ReportAudience(enum.Enum):
+    """Target audience for remediation instructions.
+
+    TOOL  -- Instructions reference PDF Accessibility Tool shortcuts and panels.
+    ACROBAT -- Instructions reference Adobe Acrobat Pro menus and dialogs.
+    """
+
+    TOOL = "tool"
+    ACROBAT = "acrobat"
+
+
 # ---------------------------------------------------------------------------
 # Scoring
 # ---------------------------------------------------------------------------
@@ -87,12 +98,37 @@ def _findings_by_page(findings: list[Finding]) -> dict[int | None, list[Finding]
     return groups
 
 
+def _remediation_for_audience(
+    finding: Finding, audience: ReportAudience
+) -> str:
+    """Return the remediation text appropriate for the audience."""
+    if audience == ReportAudience.ACROBAT:
+        return finding.acrobat_remediation or finding.remediation
+    return finding.remediation
+
+
+def _audience_label(audience: ReportAudience) -> str:
+    """Human-readable label for the target audience."""
+    if audience == ReportAudience.ACROBAT:
+        return "Adobe Acrobat Pro"
+    return "PDF Accessibility Tool"
+
+
 def generate_markdown(
     findings: list[Finding],
     pdf_path: str | Path | None = None,
     verapdf_used: bool = False,
+    audience: ReportAudience = ReportAudience.TOOL,
 ) -> str:
-    """Generate a Markdown accessibility audit report."""
+    """Generate a Markdown accessibility audit report.
+
+    Parameters
+    ----------
+    audience:
+        Controls which remediation instructions appear.  ``TOOL`` emits
+        PDF Accessibility Tool instructions; ``ACROBAT`` emits Adobe
+        Acrobat Pro instructions.
+    """
     lines: list[str] = []
     score, grade = compute_score(findings)
     by_severity = _findings_by_severity(findings)
@@ -100,9 +136,10 @@ def generate_markdown(
     warning_count = len(by_severity.get("warning", []))
     tip_count = len(by_severity.get("tip", []))
     total = len(findings)
+    tool_label = _audience_label(audience)
 
     # Header
-    lines.append("# PDF Accessibility Audit Report")
+    lines.append(f"# PDF Accessibility Audit Report ({tool_label})")
     lines.append("")
 
     # Audit info
@@ -111,6 +148,7 @@ def generate_markdown(
     lines.append(f"- **Date**: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     if pdf_path:
         lines.append(f"- **File**: {Path(pdf_path).name}")
+    lines.append(f"- **Remediation tool**: {tool_label}")
     lines.append(f"- **veraPDF**: {'Yes' if verapdf_used else 'No (built-in checks only)'}")
     lines.append("")
 
@@ -151,8 +189,9 @@ def generate_markdown(
             lines.append(f"- {severity_icon} **{f.rule_id}** (WCAG {f.wcag}): {f.description}")
             if f.element:
                 lines.append(f"  - Element: {f.element}")
-            if f.remediation:
-                lines.append(f"  - Fix: {f.remediation}")
+            fix_text = _remediation_for_audience(f, audience)
+            if fix_text:
+                lines.append(f"  - How to fix: {fix_text}")
         lines.append("")
 
     # Findings by rule
@@ -161,7 +200,6 @@ def generate_markdown(
     lines.append("| Rule ID | Count | Severity | WCAG |")
     lines.append("|---------|-------|----------|------|")
     for rule_id, count in rule_counts.most_common():
-        # Get severity and wcag from first finding with this rule
         sample = next(f for f in findings if f.rule_id == rule_id)
         lines.append(f"| {rule_id} | {count} | {sample.severity} | {sample.wcag} |")
     lines.append("")
@@ -174,24 +212,29 @@ def generate_markdown(
         lines.append("")
         for f in by_severity.get("error", []):
             lines.append(f"1. **{f.rule_id}**: {f.description}")
-            if f.remediation:
-                lines.append(f"   - {f.remediation}")
+            fix_text = _remediation_for_audience(f, audience)
+            if fix_text:
+                lines.append(f"   - {fix_text}")
         lines.append("")
     if warning_count:
         lines.append("### Soon (Warnings)")
         lines.append("")
         for f in by_severity.get("warning", []):
             lines.append(f"1. **{f.rule_id}**: {f.description}")
-            if f.remediation:
-                lines.append(f"   - {f.remediation}")
+            fix_text = _remediation_for_audience(f, audience)
+            if fix_text:
+                lines.append(f"   - {fix_text}")
         lines.append("")
     if tip_count:
         lines.append("### When Possible (Tips)")
         lines.append("")
         for f in by_severity.get("tip", []):
             lines.append(f"1. **{f.rule_id}**: {f.description}")
-            if f.remediation:
-                lines.append(f"   - {f.remediation}")
+            fix_text = _remediation_for_audience(f, audience)
+            if fix_text:
+                lines.append(f"   - {fix_text}")
+            if f.acrobat_remediation:
+                lines.append(f"   - Adobe Acrobat Pro: {f.acrobat_remediation}")
         lines.append("")
 
     # Scorecard
@@ -214,12 +257,21 @@ def generate_markdown(
 # ---------------------------------------------------------------------------
 
 
-def generate_csv(findings: list[Finding]) -> str:
-    """Generate a CSV report with one row per finding."""
+def generate_csv(
+    findings: list[Finding],
+    audience: ReportAudience = ReportAudience.TOOL,
+) -> str:
+    """Generate a CSV report with one row per finding.
+
+    The *Remediation* column contains instructions for the selected
+    ``audience`` only.
+    """
     output = io.StringIO()
     writer = csv.writer(output)
+    tool_label = _audience_label(audience)
     writer.writerow(
-        ["Rule ID", "Severity", "WCAG", "Page", "Element", "Description", "Remediation"]
+        ["Rule ID", "Severity", "WCAG", "Page", "Element", "Description",
+         f"Remediation ({tool_label})"]
     )
     for f in findings:
         writer.writerow(
@@ -230,7 +282,7 @@ def generate_csv(findings: list[Finding]) -> str:
                 f.page if f.page is not None else "",
                 f.element or "",
                 f.description,
-                f.remediation,
+                _remediation_for_audience(f, audience),
             ]
         )
     return output.getvalue()
@@ -247,8 +299,11 @@ class ReportGenerator:
     Usage::
 
         gen = ReportGenerator(findings, pdf_path="doc.pdf")
-        md_text = gen.generate(ReportFormat.MARKDOWN)
-        gen.write(ReportFormat.CSV, "report.csv")
+        md_text = gen.generate(ReportFormat.MARKDOWN)  # default: TOOL audience
+        gen.write(ReportFormat.CSV, "report.csv", audience=ReportAudience.ACROBAT)
+
+        # Write both reports at once:
+        paths = gen.write_all(ReportFormat.MARKDOWN, "reports/")
     """
 
     def __init__(
@@ -261,21 +316,59 @@ class ReportGenerator:
         self._pdf_path = pdf_path
         self._verapdf_used = verapdf_used
 
-    def generate(self, fmt: ReportFormat = ReportFormat.MARKDOWN) -> str:
-        """Return the report as a string."""
+    def generate(
+        self,
+        fmt: ReportFormat = ReportFormat.MARKDOWN,
+        audience: ReportAudience = ReportAudience.TOOL,
+    ) -> str:
+        """Return the report as a string for the given audience."""
         if fmt == ReportFormat.MARKDOWN:
             return generate_markdown(
-                self._findings, self._pdf_path, self._verapdf_used
+                self._findings, self._pdf_path, self._verapdf_used,
+                audience=audience,
             )
         elif fmt == ReportFormat.CSV:
-            return generate_csv(self._findings)
+            return generate_csv(self._findings, audience=audience)
         else:
             raise ValueError(f"Unsupported format: {fmt}")
 
-    def write(self, fmt: ReportFormat, output_path: str | Path) -> Path:
-        """Write the report to a file and return the path."""
+    def write(
+        self,
+        fmt: ReportFormat,
+        output_path: str | Path,
+        audience: ReportAudience = ReportAudience.TOOL,
+    ) -> Path:
+        """Write a single report to a file and return the path."""
         output_path = Path(output_path)
-        content = self.generate(fmt)
+        content = self.generate(fmt, audience=audience)
         output_path.write_text(content, encoding="utf-8")
         logger.info("Report written to %s", output_path)
         return output_path
+
+    def write_all(
+        self,
+        fmt: ReportFormat,
+        output_dir: str | Path,
+        stem: str = "AUDIT",
+    ) -> list[Path]:
+        """Write one report per audience to *output_dir* and return paths.
+
+        For Markdown this produces::
+
+            <stem>-tool.md
+            <stem>-acrobat.md
+
+        For CSV::
+
+            <stem>-tool.csv
+            <stem>-acrobat.csv
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        ext = ".md" if fmt == ReportFormat.MARKDOWN else ".csv"
+        paths: list[Path] = []
+        for audience in ReportAudience:
+            filename = f"{stem}-{audience.value}{ext}"
+            p = self.write(fmt, output_dir / filename, audience=audience)
+            paths.append(p)
+        return paths

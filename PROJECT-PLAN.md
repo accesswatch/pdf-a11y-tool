@@ -417,7 +417,8 @@ Responsibilities:
       page: int | None      # page number if applicable
       element: str | None   # element identifier if applicable
       confidence: str       # "high", "medium", "low"
-      remediation: str      # suggested fix
+      remediation: str      # keyboard-first fix using PDF Accessibility Tool
+      acrobat_remediation: str  # equivalent fix using Adobe Acrobat Pro
   ```
 - Map veraPDF rule IDs to internal PDFUA/PDFBP rule IDs and WCAG 2.2 success criteria
 - Timeout handling: default 60 seconds, configurable. Kill process and report timeout on failure
@@ -433,19 +434,135 @@ Checks that run without veraPDF (pure pikepdf inspection):
 |-------|---------|------|----------|
 | Missing document title | PDFUA.TITLE | 2.4.2 | Error |
 | Missing document language | PDFUA.LANG | 3.1.1 | Error |
+| Invalid BCP 47 language code | PDFBP.LANG_VALID | 3.1.1 | Error |
 | PDF is not tagged (no StructTreeRoot) | PDFUA.TAGGED | 1.3.1 | Error |
 | Image (Figure) without alt text | PDFUA.IMG.ALT | 1.1.1 | Error |
+| Figure alt text exceeds 250 characters | PDFBP.ALT_LENGTH | 1.1.1 | Warning |
+| Figure alt text is filename or placeholder (e.g., DSC_0042.jpg, image1) | PDFBP.ALT_QUALITY | 1.1.1 | Warning |
 | Form field without tooltip (TU) | PDFUA.FORMS | 4.1.2 | Error |
 | Form field without name (T) | PDFUA.FORMS | 4.1.2 | Error |
+| Duplicate form field names (non-radio) | PDFBP.FORMS.DUPLICATE_NAMES | 4.1.2 | Error |
+| Radio button group with only 1 option | PDFBP.FORMS.RADIO_GROUP | 4.1.2 | Warning |
+| Generic/non-descriptive form field tooltip | PDFBP.FORMS.TOOLTIP_QUALITY | 4.1.2 | Warning |
 | Missing bookmarks (no Outlines) | PDFUA.BOOKMARKS | 2.4.1 | Warning |
 | Empty structure tree (tagged but no elements) | PDFUA.TAGGED | 1.3.1 | Error |
 | Heading hierarchy gap (H1 then H3, no H2) | PDFUA.HEADINGS | 2.4.6 | Warning |
 | Table without header cells (no TH elements) | PDFBP.TABLE_HEADERS | 1.3.1 | Warning |
 | TH cell without Scope attribute | PDFBP.TABLE_SCOPE | 1.3.1 | Warning |
 | DisplayDocTitle not set | PDFBP.DISPLAY_TITLE | 2.4.2 | Warning |
+| No headings at all (tagged document with zero H1-H6 tags) | PDFBP.NO_HEADINGS | 2.4.6 | Warning |
+| Non-standard tag (e.g., InlineShape) without alt text or artifact marking | PDFBP.NONSTD_NO_ALT | 1.1.1 | Warning |
+| Empty content tags (P, Span, etc. with no children -- screen readers say "blank") | PDFBP.EMPTY_TAGS | 1.3.1 | Warning |
+| List structure invalid (L without LI, or LI without LBody) | PDFBP.LIST_STRUCT | 1.3.1 | Warning |
+| Caption tag not adjacent to its Figure | PDFBP.FIGURE_CAPTION | 1.1.1 | Tip |
+| Art tags present (often indicate messy structure needing cleanup) | PDFBP.ART_TAGS | 1.3.1 | Tip |
+| Excessive Sect nesting (>3 levels, common in PowerPoint exports) | PDFBP.SECT_NESTING | 1.3.1 | Tip |
+| Flat structure (all elements are direct children of Document, no /Sect grouping) | PDFBP.FLAT_STRUCTURE | 1.3.1 | Tip |
+| Non-descriptive link text ("click here", "read more", raw URLs) | PDFBP.LINK_TEXT | 2.4.4 | Warning |
+| Tab order not set to structure order (/Tabs /S) | PDFBP.NAV.TABORDER | 2.4.3 | Warning |
+| Scanned/image-only PDF with no extractable text | PDFBP.TEXT.EXTRACTABLE | 1.1.1 | Error |
+| Underscore fill lines in tagged content (screen readers read each underscore aloud) | PDFBP.UNDERSCORE_FILL | 1.3.1 | Warning |
+| Form fields detached from labels in reading order (all fields grouped at end of structure) | PDFBP.FORMS_DETACHED | 1.3.2 | Error |
 | Suspicious reading order (structure order differs greatly from visual position) | PDFBP.READING_ORDER | 1.3.2 | Tip |
+| Orphaned form tag (AcroForm field with no matching /Form structure element) | PDFBP.ORPHAN_FIELD | 4.1.2 | Error |
+| Form field not adjacent to its label in reading order | PDFBP.FIELD_LABEL_ORDER | 1.3.1 | Warning |
+| Likely decorative element not marked as artifact (InlineShape, thin rule, repeated header/footer) | PDFBP.DECORATIVE_NOT_ARTIFACT | 1.1.1 | Warning |
+| Insufficient color contrast (text foreground vs background below 4.5:1 or 3:1 for large text) | PDFBP.CONTRAST | 1.4.3 | Warning |
 
 Each check returns zero or more `Finding` objects using the same dataclass as veraPDF findings.
+
+#### Built-in Color Contrast Checker (PDFBP.CONTRAST)
+
+This check uses pypdfium2 rendering to detect insufficient color contrast without requiring veraPDF or Java. No AI or Copilot SDK is needed -- this is pixel-level color analysis.
+
+Algorithm:
+
+1. For each page, render the page at 150 DPI using pypdfium2.
+2. For each text-bearing structure element (P, H1-H6, Span, LI, TH, TD, Link, etc.), determine its bounding box from the structure tree's content region mapping.
+3. Sample foreground pixel colors: render the page region and identify the dominant non-background color in the text area (using the rendered bitmap, not content stream color operators, which avoids the complexity of parsing color spaces).
+4. Sample background pixel colors: sample pixels immediately surrounding the text bounding box to determine the background color.
+5. Calculate the WCAG 2.2 relative luminance contrast ratio using the standard formula:
+   ```
+   L = 0.2126 * R + 0.7152 * G + 0.0722 * B  (after sRGB linearization)
+   ratio = (L1 + 0.05) / (L2 + 0.05)  where L1 is the lighter luminance
+   ```
+6. Classify text as "large" (14pt bold or 18pt+) or "normal" based on font size from the content stream.
+7. Flag findings where the ratio is below 4.5:1 (normal text) or 3:1 (large text).
+8. Each finding includes the measured ratio, the sampled foreground and background hex colors, and the element's text preview, so the user knows exactly what to look at.
+
+**Performance**: This check is slower than the other built-in checks because it requires page rendering. It runs in a background thread and reports progress: "Checking contrast... page 3 of 12." The user can skip this check via a checkbox in the Run Check dialog.
+
+**Limitations**: Pixel sampling is an approximation. Gradients, textured backgrounds, and overlapping content can produce false positives. The check reports confidence: "high" for solid-color text on solid-color background, "medium" for text on images or gradients. Users are advised to verify medium-confidence findings visually or with a dedicated contrast tool.
+
+#### Orphaned Form Tag Check (PDFBP.ORPHAN_FIELD)
+
+Detects AcroForm fields that have no corresponding /Form structure element in the tag tree:
+
+1. Walk the structure tree and collect all StructElem nodes with tag /Form. Record the widget annotation each links to.
+2. Walk the AcroForm /Fields array and collect all field dictionaries.
+3. Any field in AcroForm but not linked from a /Form StructElem is "orphaned" -- screen readers cannot discover it via the tag tree.
+4. Also detects the reverse: /Form StructElem nodes that reference annotations not present in AcroForm (dead references).
+
+The "Fix Now" action (see Guided Remediation) creates a /Form StructElem and links it to the orphaned field, or offers to delete dead references.
+
+#### Form Field Label Order Check (PDFBP.FIELD_LABEL_ORDER)
+
+Detects form fields that are not adjacent to their labels in reading order:
+
+1. For each /Form element, identify its likely label (previous sibling /P, or /P within 24 points visual proximity).
+2. If the /Form element is more than 1 sibling away from its label, flag it.
+3. The finding includes both the field name and the label text, so the user can verify the association.
+
+The "Align Fields to Labels" action in the Reading Order panel fixes these in batch.
+
+#### Decorative Element Detection (PDFBP.DECORATIVE_NOT_ARTIFACT)
+
+Auto-detects elements that are likely decorative and should be marked as artifacts:
+
+1. **Non-standard tags with no alt text**: InlineShape, Textbox, and other Word-generated tags that are visual-only.
+2. **Thin horizontal rules**: Content regions whose rendered height is less than 3 points and width spans more than 50% of the page. These are typically decorative separators.
+3. **Repeated headers/footers**: Text elements that appear in the same position on 3+ consecutive pages with identical or near-identical content (page numbers, document titles, confidentiality notices).
+4. **Underscore runs**: Text content consisting entirely of underscore characters ("_____") used as visual fill lines in forms -- these are meaningless to screen readers and should be artifacts.
+
+The "Mark All Decorative as Artifacts" batch action in the Tag Tree panel fixes all detected decorative elements in one action.
+
+#### Underscore Fill Line Detection (PDFBP.UNDERSCORE_FILL)
+
+Detects text content that consists primarily of underscore characters used as visual fill lines in form labels. These are a holdover from print-era forms (e.g., "Name ___________________________") and create two accessibility problems:
+
+1. **Screen readers read each underscore aloud**: NVDA and JAWS announce "underscore underscore underscore underscore..." for each character, which is disorienting and time-consuming.
+2. **Redundant with form fields**: If the PDF already has a form field overlaid on the underscore line, the underscores serve no purpose for assistive technology -- the form field's tooltip provides the label.
+
+Algorithm:
+
+1. Walk the structure tree and identify all text-bearing /P elements.
+2. For each /P element, extract its text content via MCID-to-content-stream mapping (or pypdfium2 text extraction within the element's bounding box).
+3. Count underscore characters in the extracted text. If underscores make up more than 30% of the total characters and the text contains at least 10 consecutive underscores, flag it.
+4. Cross-reference with AcroForm fields: if a form field's bounding box overlaps the underscore region, the finding severity is "warning" (the underscore is redundant). If no form field exists, severity is "tip" (underscores may be the only input method in a print form).
+5. Each finding includes the text preview (truncated to 60 characters), the underscore percentage, and whether a form field overlaps.
+
+The "Fix Now" action for this check offers:
+- **Mark underscores as artifact** (preserves the label text, removes only the underscore portion): for elements where the label text is meaningful but the underscores are noise.
+- **Mark entire element as artifact** (removes the whole P tag): for elements that are fully redundant with an overlapping form field.
+- **Skip**: leave unchanged.
+
+The batch action "Clean All Underscore Fills" processes all flagged elements at once, using the form-field-overlap heuristic to auto-decide: if a form field overlaps, mark underscores as artifact; if no overlap, mark as tip for manual review.
+
+This check is a strong example of why the tool must adapt to arbitrary PDF documents. Microsoft Word, Google Docs, LibreOffice, and InDesign all produce different underscore patterns. The heuristic (30% threshold, 10-character minimum) was derived from scanning real-world government and university forms and works across these generators.
+
+#### Form Fields Detached from Labels (PDFBP.FORMS_DETACHED)
+
+Detects form fields that are grouped together at the end (or beginning) of the document structure, completely separated from their label content. This is a severe reading order problem:
+
+1. Count the total number of /Form structure elements and their positions in the depth-first reading order.
+2. Count the total number of text-bearing structure elements (/P, /H1-H6, /Span, etc.).
+3. If more than 50% of /Form elements appear in a contiguous block at the end (or beginning) of the reading order, with no text-bearing elements interleaved, flag as error.
+4. The finding reports: "N of M form fields are grouped at reading order positions X-Y, after all page content. Screen readers encounter all text first, then all fields, making it impossible to associate fields with their labels."
+5. Cross-reference: for each form field in the block, identify its likely label (by tooltip text matching a nearby /P element's text content). Report label-field distances.
+
+This check catches the most common reading order defect in Word-generated PDFs: Microsoft Word's PDF export appends all form fields as direct children of /Document after all content, regardless of their visual position on the page.
+
+The "Fix Now" action for this check runs the Auto-Sort Reading Order on the form field block, interleaving fields with their likely labels based on visual position. The user previews the proposed order before applying.
 
 ### Step 2.3: Issues Panel
 
@@ -455,30 +572,75 @@ Each check returns zero or more `Finding` objects using the same dataclass as ve
 - Column headers are sortable (click to sort, screen reader announces sort state)
 - Filter bar: dropdown for severity (All, Errors, Warnings, Tips) and text search
 - Activating a row (Enter or double-click) navigates the page view to the relevant page and selects the element in the tag tree panel
-- Row context menu: "Go to Element", "Learn More" (opens WCAG quick reference URL in browser), "Dismiss" (mark as reviewed, does not fix)
+- Row context menu: "Go to Element", "Learn More" (opens WCAG quick reference URL in browser), "Dismiss" (mark as reviewed, does not fix), "Fix Now" (applies the most common automatic fix for this issue, see Guided Remediation below)
 - Status line at bottom: "12 errors, 5 warnings, 3 tips (20 total)"
 - Accessible: column headers announced, cell content readable by SR, filter state announced
+
+### Step 2.3a: Guided Remediation (Fix Now)
+
+When the user presses **Enter** or selects "Fix Now" from the context menu on an issue, the tool applies a one-action fix where possible. This directly addresses the pain point of users who cannot follow multi-step remediation instructions.
+
+**Automatic fixes (no dialog needed):**
+
+| Finding | Fix Applied |
+|---------|-------------|
+| PDFUA.TITLE | Opens the Title text input dialog (one field, pre-focused) |
+| PDFUA.LANG | Opens the Language picker dialog (one dropdown, pre-focused) |
+| PDFBP.DISPLAY_TITLE | Sets DisplayDocTitle to true. No dialog. Announced: "Fixed: Display Document Title enabled." |
+| PDFUA.BOOKMARKS | Runs "Generate Bookmarks from Headings" automatically if headings exist. If no headings, announces: "Cannot generate bookmarks -- add headings first." |
+| PDFBP.NONSTD_NO_ALT | Opens a targeted dialog: "This InlineShape appears decorative. [Mark as Artifact] [Set Alt Text] [Skip]" with Mark as Artifact as the default focused button. |
+| PDFBP.ORPHAN_FIELD | Opens a dialog: "Form field 'Name' has no structure element. [Create /Form tag and link] [Delete orphaned field] [Skip]" |
+| PDFBP.DECORATIVE_NOT_ARTIFACT | Marks the element as artifact immediately. Announced: "Marked as artifact." Undoable with Ctrl+Z. |
+| PDFBP.TABLE_SCOPE | Opens a simplified Scope picker: "Set scope for this header cell: [Row] [Column] [Both] [Skip]" with auto-detection of likely scope based on position (first row = Column, first column = Row). |
+| PDFBP.FIELD_LABEL_ORDER | Automatically moves the form field to be adjacent to its detected label. Announced: "Moved field after its label in reading order." Undoable. |
+| PDFBP.CONTRAST | Navigates to the element on the page view and opens the contrast details dialog showing the measured ratio, affected text, and suggested color alternatives. No auto-fix (color changes require content stream editing). |
+| PDFBP.UNDERSCORE_FILL | Opens a targeted dialog: "This text contains N underscores (redundant with form field). [Mark underscores as artifact] [Mark entire element as artifact] [Skip]" with auto-detection of form field overlap. |
+| PDFBP.FORMS_DETACHED | Runs Auto-Sort Reading Order on the detached block. Opens the preview dialog showing proposed interleaved order. User confirms with Enter or cancels with Escape. |
+
+**Batch Fix All**: A "Fix All Auto-Fixable" button at the top of the Issues panel applies all automatic fixes in one pass. A confirmation dialog lists what will change. The entire batch is a single compound command (one Ctrl+Z undoes all). Screen reader announces: "Fixed 8 of 14 issues automatically. 6 remaining issues require manual review."
+
+All automatic fixes are undoable. The tool never makes irreversible changes without explicit user confirmation.
 
 ### Step 2.4: Report Export
 
 `core/report.py`
 
-Two export formats:
+Two export formats, each generated **per audience** (PDF Accessibility Tool users and Adobe Acrobat Pro users):
 
-**Markdown** (DOCUMENT-ACCESSIBILITY-AUDIT.md):
+**ReportAudience enum**:
 
-- Audit Information: date, tool version, file name, veraPDF version if used
+- `TOOL` -- Remediation instructions reference PDF Accessibility Tool shortcuts and panels.
+- `ACROBAT` -- Remediation instructions reference Adobe Acrobat Pro menus and dialogs.
+
+The `ReportGenerator` class exposes:
+
+- `generate(fmt, audience)` -- returns report text for one audience.
+- `write(fmt, path, audience)` -- writes one report file.
+- `write_all(fmt, output_dir, stem)` -- writes both audience reports at once (e.g., `AUDIT-tool.md` and `AUDIT-acrobat.md`).
+
+**Markdown** (AUDIT-tool.md / AUDIT-acrobat.md):
+
+- Audit Information: date, tool version, file name, remediation tool label, veraPDF version if used
 - Executive Summary: totals by severity, overall score, grade, most common issue
-- Findings by Page: grouped by page number with rule ID, WCAG, description, remediation
+- Findings by Page: grouped by page number with rule ID, WCAG, description, and remediation for the selected audience only
 - Findings by Rule: cross-reference showing how many times each rule was triggered
 - What Passed: categories with no findings
-- Remediation Priority: ordered by impact (Immediate / Soon / When Possible)
+- Remediation Priority: ordered by impact (Immediate / Soon / When Possible), each item with audience-specific fix instructions
 - Accessibility Scorecard: `Score = 100 - sum(weighted_findings)`, grades A through F
 
-**CSV**:
+**CSV** (AUDIT-tool.csv / AUDIT-acrobat.csv):
 
-- One row per finding: Rule ID, Severity, WCAG, Page, Element, Description, Remediation, Help URL
+- One row per finding: Rule ID, Severity, WCAG, Page, Element, Description, Remediation (audience-specific column header)
 - Compatible with Excel, Google Sheets, and screen reader table navigation
+
+**Separate Reports Design**:
+
+Every finding carries two remediation paths (stored on the `Finding` dataclass), but each generated report includes **only** the instructions for its target audience:
+
+1. **PDF Accessibility Tool report** (`remediation` field): Keyboard-first instructions using this application. All steps reference keyboard shortcuts (Alt+Enter, F2, Ctrl+X/V, Space, Tab, Enter) and avoid mouse-only language. No "click", "drag", or "hover" -- every action is operable via keyboard.
+2. **Adobe Acrobat Pro report** (`acrobat_remediation` field): Equivalent steps for users who have Acrobat Pro. References Acrobat's Tags panel, Properties dialog (Ctrl+E), Accessibility tools, and standard workflows.
+
+This separation keeps each report focused and avoids confusing users with instructions for a tool they may not have.
 
 **Phase 2 depends on**: Phase 1 (document model and UI shell).
 
@@ -514,6 +676,8 @@ class StructNode:
     parent: StructNode | None   # /P parent reference
     pdf_obj: pikepdf.Object     # reference to the underlying pikepdf indirect object
     node_id: str                # unique ID for UI tracking
+    remediation_status: str     # "unchecked", "action_needed", "done", "manual_done"
+    last_finding_ids: list[str] # rule IDs of current findings for this element
 ```
 
 Operations (all return Command objects for undo/redo):
@@ -575,11 +739,53 @@ Categories and types:
 
 A wx.TreeCtrl filling the left panel of the application.
 
-Display per node: `[icon] TagName -- "content preview text..." (page N)`
+Display per node: `[icon] [status] TagName -- "content preview text..." (page N)`
 
 - Icons differ by category (heading icon, paragraph icon, table icon, figure icon, form icon)
 - Content preview is the first 40 characters of actual text or alt text
 - Page number shown if the element has page content
+- **Status indicator**: A colored dot or text prefix shows the remediation state of each node:
+  - Green checkmark / "Done": All accessibility requirements met for this element
+  - Yellow warning / "Action needed": One or more issues detected (links to specific findings)
+  - No indicator: Element has not been checked yet or has no applicable rules
+- Screen readers announce the status as part of the item name: "H1, Done, Introduction, page 1" or "Figure, Action needed, page 3, no alt text"
+
+**Text-based tree summary**: Above the tree, a read-only text area shows a plain-text summary of the selected element and its context in the reading order:
+
+```
+Position: 5 of 47 (sibling 3 of 8 under Document)
+Tag: /P (Paragraph)
+Content: "This form is not necessary for asthma..."
+Page: 1
+Previous sibling: /Figure -- "UA Youth Protection logo" (page 1)
+Next sibling: /InlineShape -- no alt text (page 1)
+Parent: /Document
+Children: none (leaf element)
+Status: Done -- no issues
+```
+
+This summary gives screen reader users immediate spatial context without needing to expand/collapse tree nodes or count arrow presses. It answers: "Where am I? What is around me? What needs fixing?"
+
+**Toolbar above the tree** (visible buttons with keyboard equivalents):
+
+| Button | Label | Shortcut | Action |
+|--------|-------|----------|--------|
+| Up arrow | "Move Up" | Alt+Up | Move element earlier in sibling order (reading order) |
+| Down arrow | "Move Down" | Alt+Down | Move element later in sibling order (reading order) |
+| Left arrow | "Move Out" | Alt+Left | Reparent element to grandparent (move up one level) |
+| Right arrow | "Move In" | Alt+Right | Reparent element as last child of previous sibling (nest deeper) |
+| Lightbulb | "Next Action" | Ctrl+Shift+N | Show the recommended next remediation action (same as context menu, see below) |
+| Checkmark | "Mark Done" | Ctrl+Shift+D | Manually mark element as remediated (overrides auto-detection) |
+
+These buttons ensure that reordering and reparenting are discoverable for users who do not know the keyboard shortcuts. Each button is labeled and keyboard-focusable.
+
+**Drag and drop** (sighted user convenience):
+
+- Sighted users can drag a tree node and drop it onto another node to reparent, or between nodes to reorder.
+- Drop targets are highlighted: blue line between nodes = insert as sibling, blue highlight on node = insert as child.
+- A confirmation dialog appears after drop: "Move /P to be a child of /Sect? [OK] [Cancel]"
+- Drag and drop is a convenience feature. Every drag-and-drop operation is also available through keyboard: Alt+Up/Down for reorder, Alt+Left/Right for reparent, Ctrl+X/V for arbitrary moves.
+- Screen reader users are never required to use drag and drop. The toolbar buttons and keyboard shortcuts provide identical functionality.
 
 Keyboard operations:
 
@@ -593,26 +799,78 @@ Keyboard operations:
 | Ctrl+V | Paste element as child of selected node |
 | Alt+Up | Move element up within parent (reorder) |
 | Alt+Down | Move element down within parent (reorder) |
+| Alt+Left | Move element out to grandparent (reparent up one level) |
+| Alt+Right | Move element in as child of previous sibling (reparent deeper) |
 | Ctrl+Alt+A | Set alt text (opens edit dialog) |
 | Ctrl+Alt+L | Set language (opens BCP 47 picker) |
+| Ctrl+Shift+N | Show next recommended action for this element |
+| Ctrl+Shift+D | Toggle manual "done" status on this element |
 
 Context menu (right-click or Shift+F10):
 
+- **Next Action** (top of menu, bold): Shows the most important remediation action for this element. This is context-sensitive -- the tool analyzes the element's current state and recommends the single most impactful next step. Examples:
+  - For a /Figure with no alt text: "Next: Set alt text (Ctrl+Alt+A)"
+  - For a /P that looks like a heading (bold, large font): "Next: Change tag to H2 (F2)"
+  - For a /TH with no Scope: "Next: Set header scope (open Table Editor)"
+  - For an /InlineShape (decorative): "Next: Mark as artifact (Delete > Artifact)"
+  - For a /Form with no tooltip: "Next: Set tooltip in Field Properties"
+  - For a /Table with no THead: "Next: Add THead wrapper (Table Editor)"
+  - For an element with all issues resolved: "All done -- no remaining issues" (grayed out, informational)
+- Separator
 - Change Type (submenu with all standard types, grouped by category)
+- Mark as Artifact (removes element from structure tree; content becomes invisible to screen readers -- use for decorative elements like horizontal rules, background images, and page numbers)
+- Mark All Decorative as Artifacts (batch operation: auto-detects likely decorative elements -- InlineShapes, thin horizontal rules, repeated page headers/footers, underscores used as visual separators -- and marks them all as artifacts in one action; shows a confirmation list before applying; single compound command for undo)
 - Set Alt Text
 - Set Actual Text
 - Set Language
 - Add Child Element (submenu by type)
 - Reparent To (target picker)
-- Move Up / Move Down
+- Move Up / Move Down / Move Out / Move In
 - Delete (with confirmation)
 - Properties (open full attribute editor)
+- Separator
+- **Mark as Done** / **Mark as Needs Review**: Toggle the element's remediation status. "Mark as Done" sets the green checkmark. "Mark as Needs Review" clears it. This is useful when the user has fixed an issue outside the tool (e.g., in the source Word document) and wants to track progress.
+
+**Next Action intelligence** -- how the tool determines the recommendation:
+
+1. The tool runs the built-in checks against the single selected element (not a full document scan -- just the applicable checks for this element type).
+2. If there are findings, the highest-severity finding becomes the "Next Action" recommendation. The recommendation text includes the specific fix and its keyboard shortcut.
+3. If there are no findings from built-in checks, the tool applies heuristic recommendations:
+   - /P elements with bold text and short length: "Consider changing to a heading tag"
+   - /Form elements adjacent to unlabeled /P elements: "Consider grouping with label"
+   - Elements with role-mapped custom tags: "Consider replacing with standard tag"
+4. If there are no findings and no heuristic recommendations: "All done -- no remaining issues."
+5. The recommendation is shown in three places simultaneously:
+   - The context menu "Next Action" item
+   - The text-based summary area above the tree
+   - The status bar when the element is selected
+
+**Completion tracking per element:**
+
+Each StructNode in the in-memory model gets two additional fields:
+
+```python
+@dataclass
+class StructNode:
+    # ... existing fields ...
+    remediation_status: str   # "unchecked", "action_needed", "done", "manual_done"
+    last_finding_ids: list[str]  # rule IDs of current findings for this element
+```
+
+- `"unchecked"`: Element has not been analyzed yet (initial state).
+- `"action_needed"`: At least one finding exists for this element. The status indicator shows yellow/warning.
+- `"done"`: All findings have been resolved (auto-detected by re-running checks after edits). Green checkmark.
+- `"manual_done"`: User manually marked as done via context menu or Ctrl+Shift+D. Green checkmark with "(manual)" suffix. This is useful for issues the tool cannot verify (e.g., content accuracy).
+
+Status auto-updates: After any edit to an element (tag type change, alt text, scope, etc.), the tool silently re-runs applicable checks on that single element and updates its status. This provides immediate feedback: the user makes a change and the status indicator flips from yellow to green without having to run a full document check.
 
 Accessibility:
 
-- Tree items have accessible names: "H1 heading, Introduction, page 1"
+- Tree items have accessible names: "H1, Done, Introduction, page 1" or "Figure, Action needed, no alt text, page 3"
 - Collapse/expand state announced
 - Context menu items are descriptive
+- "Next Action" item announces the full recommendation text
+- Status changes announced: "Status changed to Done" after a fix is applied
 - Focus returns to tree after dialog closes
 
 ### Step 3.4: Reading Order Panel
@@ -631,6 +889,8 @@ Operations:
 | Move Down (Alt+Down) | Move selected element later in reading order |
 | Jump to Tag Tree (Enter) | Select this element in the tag tree panel |
 | Multi-select (Shift+click or Shift+arrows) | Batch move operations |
+| Sort by Visual Position (Ctrl+Shift+S) | Auto-sort all elements by visual position (see below) |
+| Align Fields to Labels (Ctrl+Shift+F) | Move form fields adjacent to their labels (see below) |
 
 Implementation:
 
@@ -638,6 +898,55 @@ Implementation:
 - If the user tries to move an element past a sibling boundary (into a different parent), the tool shows a reparent confirmation dialog
 - Position number updates immediately after reorder
 - Status line: "Element 5 of 47 -- H2 heading, page 2"
+
+#### Auto-Sort Reading Order by Visual Position
+
+This feature directly addresses the most common pain point: users struggling to manually fix reading order element by element. The tool uses pypdfium2 bounding box data to calculate the correct reading order automatically.
+
+**Sort by Visual Position** (Ctrl+Shift+S or button above the list):
+
+1. For each structure element with page content, the tool extracts the bounding box from the content stream (via MCID to content region mapping, using pypdfium2 rendering coordinates).
+2. Elements are sorted per page using a top-to-bottom, left-to-right algorithm:
+   - **Single-column detection**: Elements sorted by Y position (top first), then X position (left first) for elements on the same line (within a tolerance band of 12 points).
+   - **Multi-column detection**: If the tool detects two or more vertical columns of content (consistent X-position clusters), it sorts left column top-to-bottom first, then right column top-to-bottom. This handles the common two-column PDF layout.
+   - **Header/footer detection**: Elements in the top 72 points or bottom 72 points of the page are classified as header/footer and placed at the beginning/end of the page's reading order respectively, or marked as artifact candidates.
+3. A preview dialog shows the proposed new order alongside the current order. The user reviews and confirms before applying.
+4. The entire reorder is a single compound command (one Ctrl+Z undoes the whole sort).
+5. Screen reader announces: "Reading order sorted by visual position. 47 elements reordered. Review the new order and press Ctrl+Z to undo if needed."
+
+**Column detection algorithm** (pure Python, no AI):
+
+```python
+def detect_columns(bboxes: list[tuple[float, float, float, float]], 
+                   page_width: float) -> list[list[int]]:
+    """Cluster elements into columns by X-position.
+    
+    Returns list of columns, each column being a list of element indices
+    sorted top-to-bottom.
+    """
+    # Extract left-edge X positions
+    x_positions = [bbox[0] for bbox in bboxes]
+    # Cluster X positions with a tolerance (e.g., 36 points = 0.5 inch)
+    # If all X positions cluster into 1 group: single column
+    # If 2 clusters: two-column layout
+    # If 3+ clusters: multi-column or complex layout
+```
+
+This is a heuristic that works for 90%+ of typical government, education, and corporate PDFs. Edge cases (complex multi-column, Z-pattern layouts) fall back to the simple top-to-bottom sort with a "Review suggested" flag.
+
+#### Align Form Fields to Labels in Reading Order
+
+**Align Fields to Labels** (Ctrl+Shift+F or button above the list):
+
+1. For each /Form element in the structure tree, the tool identifies its likely label:
+   - Check the previous sibling: if it is a /P element with text content that matches or closely resembles the field's tooltip (/TU), it is the label.
+   - Check by visual proximity: if a /P element is directly to the left of or directly above the form field's bounding box (within 24 points), it is the label candidate.
+2. If the form field is not immediately after its label in the reading order, the tool moves it to be the next sibling after the label.
+3. A preview dialog shows all proposed moves. The user reviews and confirms.
+4. The entire operation is a single compound command.
+5. Screen reader announces: "Aligned 15 form fields to their labels. 2 fields could not be matched -- review manually."
+
+This directly addresses the pain point of form fields being in the wrong reading order relative to their labels, which causes screen readers to announce fields without context.
 
 ### Step 3.5: Page Overlay for Reading Order
 
@@ -1657,6 +1966,182 @@ Future: Inno Setup installer with:
 
 ---
 
+## Phase 13: Adaptive Learning System
+
+**Goal**: Enable the tool to learn from every PDF it scans, building a local knowledge base of accessibility patterns, common defects, and effective fixes. The system improves its detection accuracy, remediation suggestions, and auto-tagger confidence over time without requiring cloud connectivity or external AI services.
+
+**Is AI self-learning possible?** Yes. The tool can absolutely learn and adapt using local machine learning and pattern accumulation. Here is how:
+
+### Design Philosophy
+
+The adaptive learning system operates on three principles:
+
+1. **Learn locally, not in the cloud**: All learning data stays on the user's machine (or organization's shared drive). No data is sent to external services. This satisfies air-gapped government environments and FERPA/HIPAA-sensitive higher education contexts.
+2. **Learn from user corrections**: When a user changes a tag type, adds alt text, fixes reading order, or marks something as an artifact, that correction is a training signal. The system records what the element looked like before the fix and what the user chose, building a local corpus of "problem -> solution" pairs.
+3. **Learn from document patterns**: When the tool encounters a PDF from a specific source application (Word, InDesign, LibreOffice, Google Docs), it records the accessibility patterns typical of that generator. Over time, the tool develops per-generator profiles that front-load likely checks and suggest likely fixes.
+
+### Step 13.1: Pattern Database
+
+`core/pattern_db.py`
+
+A SQLite database (via Python's built-in `sqlite3`) stored in the user's config directory (platformdirs):
+
+```
+~/.config/pdf-a11y-tool/patterns.db    (Linux/macOS)
+%LOCALAPPDATA%\pdf-a11y-tool\patterns.db   (Windows)
+```
+
+Tables:
+
+| Table | Purpose |
+|-------|---------|
+| `scan_history` | Record of every PDF scanned: filename hash (SHA-256, not the filename itself for privacy), page count, source application, creation date, finding counts by rule ID, overall score, scan timestamp |
+| `corrections` | User corrections: rule ID, original element state (tag type, attributes, content preview), corrected state, source application, confidence of original detection, timestamp |
+| `generator_profiles` | Per-source-application statistics: which rules fire most often, which auto-fixes are accepted vs rejected, average element counts by tag type |
+| `element_features` | Feature vectors for tagged elements used to retrain the ML classifier: font size, weight, position, text length, content hash, assigned tag type, manually verified flag |
+| `custom_rules` | User-defined pattern rules (see Step 13.4) |
+
+Privacy: the database stores content hashes and previews (first 60 characters), never full document text. Users can clear the database at any time via Preferences > Learning > Clear All Data.
+
+### Step 13.2: Learning from User Corrections
+
+Every time the user makes a correction, the system records a training pair:
+
+```python
+@dataclass
+class CorrectionRecord:
+    rule_id: str                # Which check originally flagged this
+    source_app: str             # PDF creator application
+    element_tag_before: str     # Original tag type (e.g., "/P")
+    element_tag_after: str      # Corrected tag type (e.g., "/H2")
+    element_features: dict      # Font size, bold, position, text preview
+    auto_fix_accepted: bool     # Did the user accept a suggested fix?
+    auto_fix_type: str | None   # Which auto-fix was offered
+    timestamp: str
+```
+
+Over time, these corrections feed back into:
+
+1. **Auto-tagger retraining** (Phase 10): The ML classifier is periodically retrained on the combined default model + local corrections. This means the auto-tagger gets better at detecting headings, lists, artifacts, and other elements specific to the documents this user typically works with.
+
+2. **Fix Now suggestion ranking**: If users consistently accept "Mark as artifact" for InlineShape elements from Word documents, the Fix Now dialog defaults to that choice instead of showing a neutral selection.
+
+3. **Confidence calibration**: If the tool flags a pattern and users consistently dismiss it, the confidence for that pattern is lowered. If users consistently fix a pattern the tool didn't flag, the tool learns to flag it in the future.
+
+### Step 13.3: Generator Profile Learning
+
+The tool identifies the source application from PDF metadata (`/Creator`, `/Producer`) and builds a profile:
+
+```
+Generator: "Microsoft Word 2019"
+Total documents scanned: 47
+Most common findings:
+  1. PDFBP.NO_HEADINGS (100% of documents)
+  2. PDFBP.NONSTD_NO_ALT (89% - InlineShape tags)
+  3. PDFBP.FORMS_DETACHED (76% - fields at end of structure)
+  4. PDFBP.UNDERSCORE_FILL (64% - form fill lines)
+  5. PDFBP.FLAT_STRUCTURE (100% - no /Sect grouping)
+Typical P tag count per page: 25.3 (vs 8.1 for InDesign)
+Auto-fix acceptance rate: 91% for DECORATIVE_NOT_ARTIFACT, 78% for FIELD_LABEL_ORDER
+```
+
+When scanning a new Word document, the tool:
+- Pre-loads the Word profile and runs the most commonly triggered checks first
+- Shows a "Common issues for Word documents" banner in the Issues panel
+- Pre-selects likely fixes in the Fix Now dialogs
+- Adjusts severity: if 76% of Word documents have detached form fields, the tool surfaces this prominently rather than burying it in a long list
+
+### Step 13.4: User-Defined Pattern Rules
+
+Advanced users can define custom rules that the tool evaluates on every scan:
+
+```
+Rule: "UA Forms - Missing Program Name"
+Condition: Source application contains "Word"
+           AND document title is empty
+           AND form field count > 10
+Action: Flag as Error with message "University forms require a document title"
+```
+
+Custom rules are stored in the `custom_rules` table and checked during the regular scan pass. They can also be exported as JSON and shared with team members, creating organizational-level accessibility standards.
+
+### Step 13.5: Adaptive Scan Prioritization
+
+The learning system reorders checks based on accumulated data:
+
+1. **Source application priority**: If the tool has learned that Word documents always fail PDFBP.NO_HEADINGS and PDFBP.FORMS_DETACHED, those checks run first and their findings appear at the top of the Issues panel.
+2. **Recurrence weighting**: Issues that appeared in previous scans of the same document (identified by content hash) and were not fixed are highlighted as "Recurring -- unfixed since [date]".
+3. **User pattern priority**: If the user frequently works with university forms that have underscore fill lines, PDFBP.UNDERSCORE_FILL is elevated in severity from "warning" to "error" in their local profile.
+4. **Diminishing alerts**: If the user has dismissed a particular finding type 10+ times with "not applicable", the tool stops showing it (with a "Hidden findings: 3" indicator at the bottom of the Issues panel and a "Show Hidden" button).
+
+### Step 13.6: ML Model Retraining
+
+The auto-tagger's ML model (Phase 10, Step 10.3) is retrained from local corrections:
+
+1. **Trigger**: Automatic retraining after every 50 user corrections, or manual via Tools > Retrain Model.
+2. **Data**: Combines the shipped `default_model.pkl` training data with local `element_features` and `corrections` data.
+3. **Process**: Incremental training (warm start) on the combined dataset. Takes approximately 5 to 30 seconds depending on corpus size.
+4. **Validation**: The tool runs a validation pass comparing the retrained model's predictions against the user's corrections. If accuracy drops (overfitting to a narrow document type), the tool warns and offers to keep the previous model.
+5. **Storage**: Retrained model saved as `user_model.pkl` alongside `default_model.pkl`. Users can reset to the default model at any time.
+
+### Step 13.7: Team Learning (Optional)
+
+For organizations with multiple remediators:
+
+1. **Export/Import**: Users can export their pattern database as a `.a11y-patterns.json` file and share it with team members.
+2. **Merge**: The tool can merge pattern databases from multiple users, combining correction statistics and generator profiles. Merge resolves conflicts by taking the higher-confidence correction.
+3. **Shared drive sync**: If the pattern database path is set to a shared network drive, multiple users can contribute to the same learning corpus (SQLite write-ahead logging handles concurrent access).
+4. **Organizational rules**: Custom pattern rules (Step 13.4) can be bundled as a `.a11y-rules.json` file and distributed via a shared configuration directory.
+
+### Step 13.8: Learning Dashboard
+
+Preferences > Learning tab:
+
+```
++-----------------------------------------------------+
+| Learning Statistics                                  |
++-----------------------------------------------------+
+| Documents scanned:           47                      |
+| Corrections recorded:        312                     |
+| Custom rules:                5                       |
+| Model status:    Retrained (312 corrections)         |
+| Last retrain:    April 2, 2026 14:35                 |
++-----------------------------------------------------+
+| Top generator profiles:                              |
+|   Microsoft Word 2019    (34 documents)              |
+|   Adobe InDesign 2024    (8 documents)               |
+|   Google Docs            (5 documents)               |
++-----------------------------------------------------+
+| [Retrain Model Now]  [Export Data]  [Clear All Data] |
++-----------------------------------------------------+
+```
+
+All controls are keyboard-accessible: Tab moves between buttons and statistics sections, Enter activates buttons, statistics are announced as read-only text.
+
+### Technology Choices
+
+| Component | Technology | License |
+|-----------|-----------|---------|
+| Pattern database | sqlite3 (Python stdlib) | Public domain (SQLite) |
+| ML retraining | scikit-learn (existing dependency) | BSD-3-Clause |
+| Export format | JSON | N/A |
+| Privacy | SHA-256 content hashes, 60-char previews, no full text | N/A |
+
+### Why Not Cloud AI?
+
+The adaptive learning system deliberately avoids cloud AI (OpenAI, Copilot, etc.) for core learning:
+
+- **Offline operation**: Government and education users often work in air-gapped or restricted networks.
+- **Privacy**: PDF documents may contain PII (names, DOB, medical information as in our sample form). Sending content to cloud APIs creates compliance risk.
+- **Cost**: Per-API-call pricing makes scanning hundreds of documents expensive.
+- **Latency**: Local SQLite lookups are instant; API calls add seconds per element.
+
+Cloud AI remains a potential **opt-in add-on** for a future Phase 14 (AI-assisted alt text generation for complex images), where the user explicitly chooses to send an image to an AI service. This is discussed but not planned for the current roadmap.
+
+**Phase 13 depends on**: Phase 2 (built-in checks), Phase 3 (structure tree), Phase 10 (auto-tagger ML). Can begin collecting data as soon as Phase 2 is implemented.
+
+---
+
 ## File Inventory
 
 ### Source Files
@@ -1871,6 +2356,9 @@ All saved PDFs are validated with:
 | R10 | Complex tables with spans are difficult to parse | Medium | Medium | Start with simple tables (no spans). Add span support incrementally. Flag unparseable tables for manual review. |
 | R11 | Form XObjects contain nested content streams | Medium | High | Phase 9 must recursively parse XObject content streams. Add specific test fixtures for PDFs with Form XObjects. |
 | R12 | Untagged PDFs with unusual content stream structure | Medium | Medium | Auto-tagger falls back to heuristic-only mode if content stream parsing fails. Always let user override. |
+| R13 | Color contrast pixel sampling produces false positives | Medium | Low | Report confidence level (high/medium). Flag gradient and image backgrounds as "medium confidence, verify manually." Never auto-fix contrast (requires content stream color changes). |
+| R14 | Auto-sort reading order mishandles complex layouts | Medium | Medium | Always preview before applying. Never auto-apply without confirmation. Multi-column detection uses conservative clustering. Edge cases fall back to top-to-bottom sort with "Review suggested" flag. Single undo reverts entire sort. |
+| R15 | Form field-to-label matching produces incorrect associations | Low | Medium | Preview all proposed moves before applying. Use both structural proximity (sibling order) and visual proximity (bounding box). Flag low-confidence matches for manual review. |
 
 ---
 
@@ -1886,6 +2374,9 @@ All saved PDFs are validated with:
 | Structure tree editing before content stream editing | Structure tree edits are safe (no corruption risk). Content stream editing is high-risk. Ship value early with safer operations. | Content stream editing from the start: higher risk of shipping buggy code. |
 | Heuristic auto-tagger with optional ML | Heuristics work without external dependencies and are interpretable. ML improves accuracy but adds scikit-learn dependency. | ML-only: requires training data and adds dependency. Heuristic-only: lower accuracy for edge cases. |
 | Rebuild ParentTree from scratch (not incremental) | Eliminates sync bugs between structure tree and ParentTree. Simpler to implement. Acceptable performance for typical document sizes. | Incremental ParentTree updates: faster but much higher bug risk. |
+| No AI/Copilot SDK dependency for core analysis | All 29 built-in checks use pikepdf structure inspection, pypdfium2 rendering for contrast and text extraction, and heuristic algorithms for decorative detection, reading order sort, and label-field matching. No cloud API calls, no network dependency, no API keys. The tool works fully offline. | GitHub Copilot SDK: would enable AI-generated alt text for images, but adds cloud dependency, API cost, and network requirement. Designated as potential future add-on (Phase 13+), not core dependency. |
+| Guided Remediation (Fix Now) over documentation-only | Real user feedback showed that even detailed written instructions are insufficient for many users. One-action fixes (Fix Now button) eliminate the instruction-following barrier entirely. Every auto-fix is undoable. | Documentation-only: cheaper to build but fails users who struggle with multi-step procedures. Wizard-based: more guided but slower per issue. |
+| Auto-Sort Reading Order by visual position | Manual reading order correction is the #1 time sink and error source in PDF remediation. Automated sort with review handles 90%+ of cases correctly. Column detection handles common two-column layouts. Edge cases fall back to manual. | Manual-only: leaves users to reorder elements one by one. Full AI layout analysis: overkill for rectangle-based column detection. |
 | PyInstaller one-folder mode | Faster startup than one-file. Easier to debug. Files can be inspected. | One-file: single exe but slow startup (extracts to temp). NSIS/Inno installer: better UX but more build complexity (added as future option). |
 | MIT license for the tool | Maximum permissibility. Compatible with all dependency licenses (MPL-2.0, Apache-2.0, BSD, LGPL). | MPL-2.0: would require source disclosure for modifications. GPL: too restrictive for team tools. |
 
@@ -2046,26 +2537,63 @@ Accessible name: "Tag tree."
 
 Control: `wx.TreeCtrl` -- a native Windows tree view control. This is one of the best-supported controls across all screen readers. NVDA, JAWS, and Narrator all have deep support for tree views including level announcements, expand/collapse state, and item count.
 
-Each tree item displays: `TagName -- "content preview..." (page N)`
+Each tree item displays: `[status] TagName -- "content preview..." (page N)`
 
-A screen reader announces each item as: "H1, Introduction, page 1, level 2, collapsed, 3 of 47." The level corresponds to the nesting depth. Expanded/collapsed state is automatic from `wx.TreeCtrl`. The item count ("3 of 47") is the position among siblings.
+A screen reader announces each item as: "H1, Done, Introduction, page 1, level 2, collapsed, 3 of 47." or "Figure, Action needed, no alt text, page 3, level 3, 5 of 8." The status ("Done" or "Action needed") is part of the accessible name so screen reader users always know which elements still need work. The level corresponds to the nesting depth. Expanded/collapsed state is automatic from `wx.TreeCtrl`. The item count ("3 of 47") is the position among siblings.
 
-Tree item icons are visible to sighted users but do not convey information not already in the text. The tag name (H1, P, Table, Figure, etc.) tells the user what kind of element it is.
+Tree item icons are visible to sighted users but do not convey information not already in the text. The tag name (H1, P, Table, Figure, etc.) tells the user what kind of element it is. The status indicator (green checkmark or yellow warning dot) is backed by the text status in the accessible name.
+
+**Text-based element summary** (above the tree): A read-only `wx.TextCtrl` that updates whenever the tree selection changes. This gives screen reader users immediate spatial context:
+
+```
+Position: 5 of 47 (sibling 3 of 8 under Document)
+Tag: /P (Paragraph)
+Content: "This form is not necessary for asthma..."
+Page: 1
+Previous sibling: /Figure -- "UA Youth Protection logo" (page 1)
+Next sibling: /InlineShape -- no alt text (page 1)
+Parent: /Document
+Children: none (leaf element)
+Status: Done -- no issues
+Next action: None -- all requirements met
+```
+
+A screen reader user can Tab to this summary area and read it with their review cursor. It answers: "Where am I in the tree? What is around me? What needs fixing?" This is critical because tree navigation with arrow keys gives you one node at a time. The summary gives you the full neighborhood at a glance.
+
+**Toolbar above the tree**: A `wx.ToolBar` with visible buttons. Each button has an icon, text label, and keyboard shortcut. Buttons are Tabfocusable and operable with Enter or Space.
+
+| Button | Icon | Label | Shortcut |
+|--------|------|-------|----------|
+| Up arrow | arrow-up | "Move Up" | Alt+Up |
+| Down arrow | arrow-down | "Move Down" | Alt+Down |
+| Left arrow | arrow-left | "Move Out" | Alt+Left |
+| Right arrow | arrow-right | "Move In" | Alt+Right |
+| Separator | | | |
+| Lightbulb | lightbulb | "Next Action" | Ctrl+Shift+N |
+| Checkmark | check | "Mark Done" | Ctrl+Shift+D |
+
+These buttons make reordering and reparenting discoverable without memorizing shortcuts. Screen reader users navigating the toolbar hear: "Move Up button, Alt+Up. Move Down button, Alt+Down." and so on.
+
+**Drag and drop** (sighted user convenience): Sighted users can drag a tree node and drop it onto another node to reparent, or between nodes to reorder. Drop targets are highlighted visually. A confirmation dialog appears after every drop. Drag and drop is strictly a convenience -- all operations are equally available through keyboard shortcuts and toolbar buttons. Screen reader users are never required to use drag and drop.
 
 Operations available:
 
 - **Arrow keys**: Navigate the tree (Up/Down between siblings and parent/child, Left collapses, Right expands).
 - **Enter**: Navigates the page view to the page containing this element and scrolls/highlights it. Does not change focus -- the user stays in the tree.
 - **F2**: Opens a dropdown overlay (a `wx.ComboBox` popup) listing all valid tag types for this position. The user selects a new type and presses Enter to apply, or Escape to cancel. This is announced: "Change tag type. Current type H1. Choose new type." The dropdown is filterable by typing.
-- **Delete**: Opens a confirmation dialog: "Delete this element? [Delete element and children] [Move children to parent] [Cancel]". Focus returns to the next sibling after deletion.
+- **Delete**: Opens a confirmation dialog: "Delete this element? [Delete element and children] [Move children to parent] [Mark as Artifact] [Cancel]". Focus returns to the next sibling after deletion.
 - **Ctrl+X**: Cuts the element (for reparenting via Ctrl+V).
 - **Ctrl+V**: Pastes the cut element as a child of the currently selected node. A dialog asks: "Insert as first child, last child, or after position N?" with a spinner.
 - **Alt+Up / Alt+Down**: Moves the element up or down among its siblings (changes reading order). The tree redraws and focus stays on the moved item. Screen reader announces: "Moved up. Now position 2 of 5."
+- **Alt+Left**: Moves the element out of its parent to become a sibling of the parent (reparent to grandparent). Screen reader announces: "Moved out. Now child of Document, position 4 of 12."
+- **Alt+Right**: Moves the element into the previous sibling as its last child (nest one level deeper). Screen reader announces: "Moved in. Now child of Sect, position 3 of 3."
 - **Ctrl+Alt+A**: Opens a simple text input dialog for alt text. Pre-filled with current value. Labeled: "Alternative text for Figure on page 3." Only enabled for Figure elements.
 - **Ctrl+Alt+L**: Opens a language picker dialog. A `wx.ComboBox` with common BCP 47 codes (en, en-US, fr, de, es, etc.) and free-text entry. Labeled: "Language for this element. Current: en-US."
-- **Shift+F10** or **Menu key**: Opens the context menu (same items as the Tags menu, scoped to the selected element).
+- **Ctrl+Shift+N**: Shows the "Next Action" hint -- the single most important remediation step for this element. Announced as a live region update so the screen reader reads it immediately. Also displayed in the summary area and status bar.
+- **Ctrl+Shift+D**: Toggles the manual "Done" status. Screen reader announces: "Marked as done." or "Marked as needs review."
+- **Shift+F10** or **Menu key**: Opens the context menu. The first item is always "Next Action" showing the recommended fix. The last section includes "Mark as Done" / "Mark as Needs Review."
 
-When an element is selected, the Properties panel (right side) updates to show that element's attributes. This is a passive update -- focus stays in the tree.
+When an element is selected, the Properties panel (right side) updates to show that element's attributes. This is a passive update -- focus stays in the tree. The text summary area above the tree also updates with the selected element's context.
 
 ### Page View Panel (Center)
 
@@ -2378,20 +2906,26 @@ These rules are enforced throughout the application:
 
 Every feature in the application is reachable through at least two paths:
 
-| Feature | Path 1 (Keyboard shortcut) | Path 2 (Menu) | Path 3 (Context menu) |
-|---------|--------------------------|--------------|---------------------|
-| Open PDF | Ctrl+O | File, Open | -- |
-| Save | Ctrl+S | File, Save | -- |
-| Run check | F5 | Check, Run Full Check | -- |
-| Change tag type | F2 (in tree) | Tags, Change Type | Right-click, Change Type |
-| Set alt text | Ctrl+Alt+A | Tags, Set Alt Text | Right-click, Set Alt Text |
-| Move in reading order | Alt+Up/Down | -- | Right-click, Move Up/Down |
-| Delete element | Delete key | Tags, Delete Element | Right-click, Delete |
-| Undo | Ctrl+Z | Edit, Undo | -- |
-| Toggle overlay | Ctrl+Shift+O | View, Reading Order Overlay | -- |
-| SR Preview | Ctrl+Shift+R | View, Screen Reader Preview | -- |
+| Feature | Path 1 (Keyboard shortcut) | Path 2 (Menu/Toolbar) | Path 3 (Context menu) | Path 4 (Drag and drop) |
+|---------|--------------------------|---------------------|---------------------|-----------------------|
+| Open PDF | Ctrl+O | File, Open | -- | -- |
+| Save | Ctrl+S | File, Save | -- | -- |
+| Run check | F5 | Check, Run Full Check | -- | -- |
+| Change tag type | F2 (in tree) | Tags, Change Type | Right-click, Change Type | -- |
+| Set alt text | Ctrl+Alt+A | Tags, Set Alt Text | Right-click, Set Alt Text | -- |
+| Move up in reading order | Alt+Up | Move Up toolbar button | Right-click, Move Up | -- |
+| Move down in reading order | Alt+Down | Move Down toolbar button | Right-click, Move Down | -- |
+| Move out (reparent up) | Alt+Left | Move Out toolbar button | Right-click, Move Out | Drag to new parent |
+| Move in (reparent deeper) | Alt+Right | Move In toolbar button | Right-click, Move In | Drag onto sibling |
+| Reorder by dragging | -- | -- | -- | Drag between nodes |
+| Next action hint | Ctrl+Shift+N | Next Action toolbar button | Right-click, Next Action | -- |
+| Mark as done | Ctrl+Shift+D | Mark Done toolbar button | Right-click, Mark as Done | -- |
+| Delete element | Delete key | Tags, Delete Element | Right-click, Delete | -- |
+| Undo | Ctrl+Z | Edit, Undo | -- | -- |
+| Toggle overlay | Ctrl+Shift+O | View, Reading Order Overlay | -- | -- |
+| SR Preview | Ctrl+Shift+R | View, Screen Reader Preview | -- | -- |
 
-There are no features accessible only by mouse hover, only by drag-and-drop, or only by right-click. Right-click and context menus are convenience shortcuts; every action in them is also available via the menu bar or keyboard shortcuts.
+There are no features accessible only by mouse hover, only by drag-and-drop, or only by right-click. Drag and drop is a sighted-user convenience -- every drag-and-drop operation has a keyboard equivalent (Alt+Up/Down/Left/Right or Ctrl+X/V). Right-click and context menus are convenience shortcuts; every action in them is also available via the menu bar, toolbar buttons, or keyboard shortcuts.
 
 ---
 
@@ -2436,4 +2970,6 @@ There are no features accessible only by mouse hover, only by drag-and-drop, or 
 
 ---
 
-*Plan version 1.0 -- April 1, 2026*
+*Plan version 1.1 -- April 2, 2026*
+
+*Revision 1.1 changes: Added 4 new built-in checks (PDFBP.ORPHAN_FIELD, PDFBP.FIELD_LABEL_ORDER, PDFBP.DECORATIVE_NOT_ARTIFACT, PDFBP.CONTRAST). Added Guided Remediation (Fix Now) to Issues Panel. Added Auto-Sort Reading Order by Visual Position. Added Align Form Fields to Labels. Added Batch Mark All Decorative as Artifacts. Added built-in color contrast checker using pypdfium2 rendering. Updated Decisions Log with Copilot SDK, Guided Remediation, and Auto-Sort decisions. Updated Risk Register with R13-R15. All additions driven by real end-user feedback on PDF remediation pain points.*

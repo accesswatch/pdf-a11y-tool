@@ -27,6 +27,7 @@ class TestFinding:
         assert f.element is None
         assert f.confidence == "high"
         assert f.remediation == ""
+        assert f.acrobat_remediation == ""
 
     def test_full(self):
         f = Finding(
@@ -37,10 +38,12 @@ class TestFinding:
             page=3,
             element="Figure1",
             confidence="medium",
-            remediation="Fix it",
+            remediation="Fix it with the tool",
+            acrobat_remediation="Fix it in Acrobat",
         )
         assert f.page == 3
         assert f.element == "Figure1"
+        assert f.acrobat_remediation == "Fix it in Acrobat"
 
 
 class TestFindVeraPdfExe:

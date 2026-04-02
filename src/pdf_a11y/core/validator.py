@@ -40,6 +40,7 @@ class Finding:
     element: str | None = None
     confidence: str = "high"
     remediation: str = ""
+    acrobat_remediation: str = ""
 
 
 # ---------------------------------------------------------------------------
