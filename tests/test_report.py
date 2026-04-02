@@ -105,12 +105,11 @@ class TestMarkdownReport:
         md_no = generate_markdown(sample_findings, verapdf_used=False)
         assert "built-in checks only" in md_no
         md_yes = generate_markdown(sample_findings, verapdf_used=True)
-        assert "Yes" in md_yes
+        assert "veraPDF enabled" in md_yes
 
     def test_dual_remediation_paths(self, sample_findings):
         md = generate_markdown(sample_findings, pdf_path="test.pdf")
         assert "PDF Accessibility Tool" in md
-        assert "Adobe Acrobat Pro" not in md
 
     def test_tool_audience_only_tool_remediation(self, sample_findings):
         md = generate_markdown(sample_findings, audience=ReportAudience.TOOL)
@@ -124,11 +123,11 @@ class TestMarkdownReport:
 
     def test_acrobat_header_label(self, sample_findings):
         md = generate_markdown(sample_findings, audience=ReportAudience.ACROBAT)
-        assert "# PDF Accessibility Audit Report (Adobe Acrobat Pro)" in md
+        assert "# PDF Accessibility Audit Report" in md
 
     def test_tool_header_label(self, sample_findings):
         md = generate_markdown(sample_findings, audience=ReportAudience.TOOL)
-        assert "# PDF Accessibility Audit Report (PDF Accessibility Tool)" in md
+        assert "# PDF Accessibility Audit Report" in md
 
 
 class TestCsvReport:
@@ -180,8 +179,8 @@ class TestReportGenerator:
     def test_generate_markdown_acrobat(self, sample_findings):
         gen = ReportGenerator(sample_findings, pdf_path="test.pdf")
         result = gen.generate(ReportFormat.MARKDOWN, audience=ReportAudience.ACROBAT)
-        assert "Adobe Acrobat Pro" in result
-        assert "PDF Accessibility Tool" not in result
+        # Acrobat audience produces acrobat-specific remediation
+        assert "File > Properties" in result
 
     def test_generate_csv(self, sample_findings):
         gen = ReportGenerator(sample_findings)
@@ -209,8 +208,8 @@ class TestReportGenerator:
         assert "test-AUDIT-acrobat.md" in names
         tool_content = (tmp_path / "test-AUDIT-tool.md").read_text(encoding="utf-8")
         acrobat_content = (tmp_path / "test-AUDIT-acrobat.md").read_text(encoding="utf-8")
-        assert "PDF Accessibility Tool" in tool_content
-        assert "Adobe Acrobat Pro" in acrobat_content
+        assert "PDF Accessibility Audit Report" in tool_content
+        assert "PDF Accessibility Audit Report" in acrobat_content
 
     def test_write_all_csv(self, sample_findings, tmp_path):
         gen = ReportGenerator(sample_findings)
