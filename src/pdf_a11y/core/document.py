@@ -147,13 +147,16 @@ class PdfDocument:
     def open(self, path: str | Path) -> None:
         """Open a PDF file. Raises pikepdf.PdfError on failure."""
         path = Path(path)
+        old_pdf: pikepdf.Pdf | None = None
         with self._lock:
-            if self._pdf is not None:
-                self._pdf.close()
-            self._pdf = pikepdf.open(path, allow_overwriting_input=True)
+            new_pdf = pikepdf.open(path, allow_overwriting_input=True)
+            old_pdf = self._pdf
+            self._pdf = new_pdf
             self._path = path
             self._dirty = False
             self.commands.clear()
+        if old_pdf is not None:
+            old_pdf.close()
         self._notify_changed("open")
 
     def close(self) -> None:

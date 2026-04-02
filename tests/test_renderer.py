@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sys
 import threading
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -31,16 +31,16 @@ class _FakeBitmap:
 
 
 wx_mock.Bitmap = _FakeBitmap
-sys.modules.setdefault("wx", wx_mock)
+sys.modules["wx"] = wx_mock
 
 # Stub out PIL
 pil_mock = MagicMock()
-sys.modules.setdefault("PIL", pil_mock)
-sys.modules.setdefault("PIL.Image", pil_mock.Image)
+sys.modules["PIL"] = pil_mock
+sys.modules["PIL.Image"] = pil_mock.Image
 
 # Stub out pypdfium2
 pdfium_mock = MagicMock()
-sys.modules.setdefault("pypdfium2", pdfium_mock)
+sys.modules["pypdfium2"] = pdfium_mock
 
 from pdf_a11y.core.renderer import (
     LRUCache,
@@ -335,8 +335,6 @@ class TestPageRenderer:
         bitmap = _FakeBitmap("async_miss")
         callback = MagicMock()
         threads_started: list[bool] = []
-
-        original_start = threading.Thread.start
 
         def _mock_start(self_thread: threading.Thread) -> None:
             threads_started.append(True)

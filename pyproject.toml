@@ -7,7 +7,7 @@ name = "pdf-a11y-tool"
 version = "0.1.0"
 description = "Accessible PDF remediation, form building, and auto-tagging tool"
 requires-python = ">=3.11"
-license = "MIT"
+license = { text = "MIT" }
 dependencies = [
     "pikepdf>=9.0",
     "pypdfium2>=4.0",

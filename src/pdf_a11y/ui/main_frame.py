@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import wx
 import wx.aui
-import wx.lib.newevent
 
 from pdf_a11y.core.document import PdfDocument, EVT_DOC_CHANGED, EVT_DOC_CLOSED
 from pdf_a11y.core.renderer import PageRenderer
@@ -322,7 +321,7 @@ class MainFrame(wx.Frame):
             id=ID_TOOLBAR_ZOOM,
             value="100%",
             choices=self._ZOOM_LABELS,
-            style=wx.CB_DROPDOWN,
+            style=wx.CB_DROPDOWN | wx.TE_PROCESS_ENTER,
             size=(80, -1),
         )
         self._zoom_combo.SetName("Zoom level selector")
@@ -659,10 +658,20 @@ class MainFrame(wx.Frame):
     def _open_file(self, path: str) -> None:
         try:
             self._document.open(path)
-            self._renderer.load(path)
         except Exception as exc:
             wx.MessageBox(
                 f"Could not open file:\n{exc}",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+                self,
+            )
+            return
+        try:
+            self._renderer.load(path)
+        except Exception as exc:
+            self._document.close()
+            wx.MessageBox(
+                f"Could not load renderer for file:\n{exc}",
                 "Error",
                 wx.OK | wx.ICON_ERROR,
                 self,
@@ -685,9 +694,9 @@ class MainFrame(wx.Frame):
                 self,
             )
 
-    def _on_file_save_as(self, event: wx.CommandEvent) -> None:
+    def _on_file_save_as(self, event: wx.CommandEvent | None) -> None:
         if not self._document.is_open:
-            return
+            return False
         with wx.FileDialog(
             self,
             "Save PDF file",
@@ -695,11 +704,12 @@ class MainFrame(wx.Frame):
             style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
         ) as dlg:
             if dlg.ShowModal() == wx.ID_CANCEL:
-                return
+                return False
             path = dlg.GetPath()
         try:
             self._document.save_as(path)
             self._update_title()
+            return True
         except Exception as exc:
             wx.MessageBox(
                 f"Could not save file:\n{exc}",
@@ -707,6 +717,7 @@ class MainFrame(wx.Frame):
                 wx.OK | wx.ICON_ERROR,
                 self,
             )
+            return False
 
     def _on_exit(self, event: wx.CommandEvent) -> None:
         self.Close()
@@ -941,9 +952,9 @@ class MainFrame(wx.Frame):
         if result == wx.YES:
             try:
                 self._document.save()
+                return True
             except Exception:
-                self._on_file_save_as(None)
-            return True
+                return bool(self._on_file_save_as(None))
         if result == wx.NO:
             return True
         return False  # CANCEL

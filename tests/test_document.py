@@ -14,8 +14,7 @@ Tests cover:
 from __future__ import annotations
 
 import sys
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -25,9 +24,9 @@ import pytest
 # Create a minimal wx mock so document.py can be imported without a display
 wx_mock = MagicMock()
 wx_mock.EvtHandler = object  # so isinstance checks work against plain object
-sys.modules.setdefault("wx", wx_mock)
-sys.modules.setdefault("wx.lib", MagicMock())
-sys.modules.setdefault("wx.lib.newevent", MagicMock())
+sys.modules["wx"] = wx_mock
+sys.modules["wx.lib"] = MagicMock()
+sys.modules["wx.lib.newevent"] = MagicMock()
 
 # Patch wx.lib.newevent.NewEvent to return distinct sentinel objects
 _doc_changed_evt = MagicMock(name="DocChangedEvent")
@@ -40,7 +39,6 @@ wx_mock.lib.newevent.NewEvent.side_effect = [
     (_doc_closed_evt, _evt_doc_closed),
 ]
 
-import importlib
 import pdf_a11y.core.document as doc_mod
 
 # After import, reload the side_effect so the module-level NewEvent calls ran

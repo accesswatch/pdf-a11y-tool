@@ -8,7 +8,7 @@
 
 1. Launch the application with `pdf-a11y-tool` or `python -m pdf_a11y`
 2. Use **File → Open** (`Ctrl+O`) to open an existing PDF file
-3. Or use **File → New Blank PDF** (`Ctrl+N`) to create a new tagged document from scratch
+3. **Planned:** **File → New Blank PDF** (`Ctrl+N`) will allow you to create a new tagged document from scratch (not yet implemented)
 
 ### The Main Window
 
@@ -22,19 +22,21 @@ The application window is divided into several dockable panels:
 
 All panels can be docked, undocked, resized, or hidden using the **View → Panels** menu.
 
-## Checking Accessibility
+## Planned: Checking Accessibility
 
-Press **F5** or use **Check → Run Full Check** to run an accessibility audit.
-Results appear in the **Issues** tab at the bottom of the window.
+Automatic accessibility checking is planned for a future development phase and is not yet available in the current version.
 
-Each issue shows:
+In a future release, press **F5** or use **Check → Run Full Check** to run an accessibility audit.
+Results will appear in the **Issues** tab at the bottom of the window.
+
+Each issue will show:
 - **Severity** — Error, Warning, or Info
 - **Rule** — The rule ID that was violated
 - **WCAG** — The corresponding WCAG 2.1 success criterion
 - **Description** — What was found and how to fix it
 - **Page** — The page number where the issue occurs
 
-Double-click an issue to navigate to the related element.
+Double-clicking an issue will navigate to the related element.
 
 ## Editing the Tag Tree
 

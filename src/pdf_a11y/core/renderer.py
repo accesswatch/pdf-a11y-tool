@@ -136,23 +136,31 @@ class PageRenderer:
             return
 
         def _worker() -> None:
-            bitmap = self._render(page_index, zoom)
-            self._cache.put(cache_key, bitmap)
-            wx.CallAfter(callback, bitmap)
+            pil_image = self._render_to_pil(page_index, zoom)
+
+            def _on_ui_thread() -> None:
+                bitmap = self._pil_to_wx_bitmap(pil_image)
+                self._cache.put(cache_key, bitmap)
+                callback(bitmap)
+
+            wx.CallAfter(_on_ui_thread)
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 
-    def _render(self, page_index: int, zoom: float) -> wx.Bitmap:
-        """Internal: render a page at the given zoom level."""
+    def _render_to_pil(self, page_index: int, zoom: float) -> Image.Image:
+        """Internal: render a page to a PIL Image at the given zoom level."""
         with self._lock:
             if self._doc is None:
                 raise ValueError("No document loaded.")
             page = self._doc[page_index]
             scale = (self._dpi / 72.0) * zoom
             bitmap_obj = page.render(scale=scale, rotation=0)
-            pil_image = bitmap_obj.to_pil()
+            return bitmap_obj.to_pil()
 
+    def _render(self, page_index: int, zoom: float) -> wx.Bitmap:
+        """Internal: render a page at the given zoom level."""
+        pil_image = self._render_to_pil(page_index, zoom)
         return self._pil_to_wx_bitmap(pil_image)
 
     @staticmethod
