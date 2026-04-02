@@ -26,6 +26,8 @@ Prepared April 1, 2026
 - [Phase 10: Auto-Tagger](#phase-10-auto-tagger)
 - [Phase 11: Tool Accessibility](#phase-11-tool-accessibility)
 - [Phase 12: Packaging and Distribution](#phase-12-packaging-and-distribution)
+- [Phase 13: Adaptive Learning System](#phase-13-adaptive-learning-system)
+- [Phase 14: AI-Assisted Remediation and Agentic Integration](#phase-14-ai-assisted-remediation-and-agentic-integration)
 - [File Inventory](#file-inventory)
 - [Dependencies](#dependencies)
 - [Phase Dependencies Map](#phase-dependencies-map)
@@ -53,8 +55,14 @@ Build a fully accessible wxPython desktop application that:
 10. **Previews** the screen reader experience with a linearized text view of the tag tree in reading order
 11. **Reports** findings with severity scoring, WCAG mapping, and CSV/Markdown export
 12. **Packages** as a standalone Windows application via PyInstaller
+13. **AI-Assisted Remediation** generates alt text via vision LLMs, provides AI-powered remediation guidance, and exposes an MCP server for agentic workflows in VS Code Copilot
 
-The tool itself must be fully operable with NVDA and JAWS screen readers, keyboard only, and in Windows High Contrast mode.
+The tool supports **two paths**:
+
+- **Desktop path**: The wxPython GUI works fully offline with all 29+ built-in checks, guided remediation, and manual editing. No cloud dependency.
+- **Agentic path**: When configured with a GitHub token, the tool uses vision LLMs via GitHub Models API for alt text generation, quality scoring, and remediation guidance. An MCP server exposes all scanning and fixing capabilities to VS Code Copilot agents.
+
+Both paths share the same scanner engine, rule definitions, and fix tier classification. The tool itself must be fully operable with NVDA and JAWS screen readers, keyboard only, and in Windows High Contrast mode.
 
 ---
 
@@ -110,6 +118,13 @@ Screen reader users (NVDA and JAWS) are first-class users of the tool itself.
 | PDF/UA validation | veraPDF 1.26 or later | MPL-2.0 | Full PDF/UA conformance checking via CLI (optional, requires Java) |
 | Auto-tagger ML | scikit-learn or similar | BSD-3-Clause | Text classification for heading, paragraph, list detection |
 | Packaging | PyInstaller 6.x or later | GPL (build tool only, not bundled) | One-folder Windows exe distribution |
+| AI alt text | tools/alt_text package | MIT (internal) | Vision-LLM alt text generation via GitHub Models API (opt-in) |
+| AI communication | httpx 0.27+ | BSD-3-Clause | HTTP client for GitHub Models API calls |
+| MCP server | FastMCP (mcp 1.x) | MIT | Model Context Protocol server for VS Code Copilot agent integration |
+| PDF extraction | PyMuPDF 1.24+ | AGPL-3.0 | Image extraction from PDFs for AI alt text (agents extra only) |
+| Office scanning | python-docx, openpyxl, python-pptx | MIT/MIT/MIT | Office document accessibility scanning (agents extra only) |
+
+> **Note on PyMuPDF license**: PyMuPDF (AGPL-3.0) is used only for image extraction in the agents optional extra. It is not bundled in the standalone desktop distribution and is not required for core functionality.
 
 ### Why These Choices
 
@@ -160,6 +175,33 @@ Core Engine Layer
 
 External Tools (optional)
     veraPDF CLI ..................... PDF/UA validation (requires Java)
+
+AI Bridge Layer (optional, agents extra)
+    ai_bridge.py .................... Connects desktop UI to AI capabilities
+
+Agentic Toolkit Layer (optional, MCP server)
+    tools/mcp_server.py ............. FastMCP server with 21+ tools for Copilot
+    tools/scan_*.py ................. Scanners (PDF, Word, Excel, PowerPoint, ePub, Markdown)
+    tools/fix_*.py .................. Fixers (PDF, Word, Excel, PowerPoint, ePub)
+    tools/fix_tiers.py .............. Rule-to-tier classification (automated/assisted/manual)
+    tools/report_md.py .............. Markdown audit report generator
+    tools/report_html.py ............ HTML audit report generator
+    tools/merge_results.py .......... Multi-document result aggregation
+    tools/alt_text/ ................. Vision-LLM alt text package
+        client.py ................... GitHub Models API client
+        models.py ................... 10 vision model registry
+        prompt.py ................... Layered prompt assembly
+        profiles.py ................. 8 profiles (auto, informative, decorative, etc.)
+        scorer.py ................... Alt text quality scoring (0-100)
+        config.py ................... Configuration dataclass
+        auth.py ..................... GitHub token resolution
+        extractor_pdf.py ............ PDF image extraction (PyMuPDF)
+        extractor_docx.py ........... Word image extraction
+        extractor_xlsx.py ........... Excel image extraction
+        extractor_pptx.py ........... PowerPoint image extraction
+        extractor_epub.py ........... ePub image extraction
+        parser.py ................... LLM response parser
+        formats.py .................. Output format adapters
 ```
 
 ### Design Principles
@@ -2136,9 +2178,117 @@ The adaptive learning system deliberately avoids cloud AI (OpenAI, Copilot, etc.
 - **Cost**: Per-API-call pricing makes scanning hundreds of documents expensive.
 - **Latency**: Local SQLite lookups are instant; API calls add seconds per element.
 
-Cloud AI remains a potential **opt-in add-on** for a future Phase 14 (AI-assisted alt text generation for complex images), where the user explicitly chooses to send an image to an AI service. This is discussed but not planned for the current roadmap.
+Cloud AI is now implemented as an **opt-in add-on** in Phase 14 (AI-Assisted Remediation and Agentic Integration). The user explicitly chooses to send images to an AI service. All AI features require a GitHub token and are disabled by default. The core desktop tool continues to work fully offline.
 
 **Phase 13 depends on**: Phase 2 (built-in checks), Phase 3 (structure tree), Phase 10 (auto-tagger ML). Can begin collecting data as soon as Phase 2 is implemented.
+
+---
+
+## Phase 14: AI-Assisted Remediation and Agentic Integration
+
+**Goal**: Add opt-in AI capabilities that enhance the desktop tool and expose all scanning/fixing functionality to VS Code Copilot agents via an MCP server.
+
+**Prerequisite**: Phase 2 (Accessibility Checker). Benefits from Phase 3 (Structure Tree) and Phase 4 (Alt Text Editor).
+
+### Dual-Path Architecture
+
+The project supports two complementary workflows:
+
+| Path | Audience | Requirements | Key Features |
+|------|----------|-------------|--------------|
+| **Desktop** | Remediation teams, QA staff, content creators | Python 3.11+, `pip install pdf-a11y-tool` | wxPython GUI, 29+ built-in checks, guided Fix Now, offline operation |
+| **Agentic** | Developers, CI pipelines, VS Code Copilot users | Python 3.11+, `pip install pdf-a11y-tool[agents]`, GitHub token | MCP server, 18 Copilot agents, vision-LLM alt text, batch scanning |
+
+Both paths share the same scanner engine (`builtin_checks.py` and `tools/scan_*.py`), fix tier classification (`tools/fix_tiers.py`), and rule definitions. Fixes applied in one path are valid in the other.
+
+### Step 14.1: AI Bridge Module
+
+**File**: `src/pdf_a11y/core/ai_bridge.py`
+
+A bridge connecting the desktop UI to the agentic toolkit's AI capabilities. Part of the core layer (no wx imports). All methods are synchronous and thread-safe, designed to be called from worker threads with `wx.CallAfter` for UI updates.
+
+**Key classes**:
+
+- `AiBridge` -- Main class. Lazy-loads `tools/alt_text` package. Methods: `generate_alt_text()`, `generate_alt_text_for_document()`, `get_remediation_guidance()`, `list_available_models()`, `list_available_profiles()`.
+- `AltTextRequest` / `AltTextResponse` -- Dataclasses for image-to-alt-text requests with quality scoring.
+- `RemediationRequest` / `RemediationResponse` -- Dataclasses for fix guidance with tier classification.
+- `is_ai_available()` -- Checks if the alt_text package and GitHub token are configured.
+
+**Design decisions**:
+
+- Lazy imports: The `tools/` directory is added to `sys.path` at runtime. The desktop app works without the agents extra installed.
+- No wx dependency: `ai_bridge.py` lives in `core/` and uses only stdlib and tools/ imports.
+- Graceful degradation: Every method returns a response dataclass, never raises. Errors are captured in the `error` field.
+
+### Step 14.2: MCP Server for Copilot Agents
+
+**File**: `tools/mcp_server.py` (FastMCP via stdio transport)
+
+Exposes 21+ tools to VS Code Copilot:
+
+| Category | Tools | Purpose |
+|----------|-------|---------|
+| Scanning (11) | `scan_pdf`, `scan_word`, `scan_excel`, `scan_pptx`, `scan_epub`, `scan_markdown`, `scan_pdf_ua`, `scan_metadata`, `scan_tags`, `scan_forms`, `scan_all_documents` | Run accessibility checks on any supported document format |
+| Analysis (3) | `list_rules`, `classify_fix_tier`, `merge_scan_results` | Inspect rule catalog, classify findings by fix tier, aggregate multi-doc results |
+| Fixing (7) | `fix_pdf`, `fix_word`, `fix_excel`, `fix_pptx`, `fix_epub`, `generate_alt_text`, `batch_alt_text` | Apply automated fixes, generate AI alt text for images |
+
+Configured in `.vscode/mcp.json` using stdio transport. Copilot agents invoke tools via the `doc-accessibility-scanner` MCP server.
+
+### Step 14.3: Copilot Agent Definitions
+
+**Directory**: `agents/`
+
+18 agent definitions (`.agent.md` files) that work with VS Code Copilot:
+
+| Agent | Role |
+|-------|------|
+| `document-accessibility-wizard` | Orchestrator: 7-phase audit workflow, delegates to specialists |
+| `pdf-accessibility` | PDF scanner: 3 rule layers (PDF/UA, best practices, quality) |
+| `pdf-remediator` | PDF fixer: 3-tier fixes with scan-fix-verify loop |
+| `word-accessibility` | Word scanner: 15 checks with Microsoft rule mapping |
+| `excel-accessibility` | Excel scanner: 14 checks for workbook accessibility |
+| `powerpoint-accessibility` | PowerPoint scanner: 16 checks for presentation accessibility |
+| `epub-accessibility` | ePub scanner: 16 checks for EPUB Accessibility 1.1 |
+| `markdown-a11y-assistant` | Markdown audit wizard with severity scoring |
+| `office-remediator` | Office fixer: 3-tier approach for Word/Excel/PowerPoint |
+| `document-inventory` | File discovery and metadata extraction |
+| `cross-document-analyzer` | Pattern detection across multiple document audits |
+
+Plus scan config agents, CSV reporters, markdown scanner/fixer, and ePub config.
+
+### Step 14.4: Alt Text Vision-LLM Package
+
+**Directory**: `tools/alt_text/`
+
+15-file Python package for generating alt text using vision-capable LLMs via GitHub Models API:
+
+- **10 vision models**: GPT-4.1, GPT-4.1-mini, GPT-4o, GPT-4o-mini, Llama-4-Scout, Llama-4-Maverick, Phi-4-multimodal, Mistral-Small, Pixtral-Large, DeepSeek-V3
+- **8 profiles**: auto, informative, data, decorative, functional, text, logo, complex
+- **Quality scoring**: 0-100 score with flags for length, vagueness, filename patterns
+- **Multi-format extraction**: PDF (PyMuPDF), Word (python-docx), Excel (openpyxl), PowerPoint (python-pptx), ePub (zipfile/lxml)
+
+Authentication: GitHub token resolved from `GITHUB_TOKEN` environment variable or `gh auth token` CLI fallback.
+
+### Step 14.5: Skills and Prompts
+
+**Directory**: `agents/skills/` (8 skill directories)
+
+Domain knowledge packages used by Copilot agents:
+
+- `accessibility-rules` -- Cross-format rule reference with WCAG 2.2 mapping
+- `document-scanning` -- Document discovery and inventory patterns
+- `help-url-reference` -- Maps rule IDs to remediation help URLs
+- `pdf-remediation` -- PDF fix patterns and tier classification
+- `office-remediation` -- Office doc OOXML fix patterns
+- `report-generation` -- Audit report formatting and scoring
+- `markdown-accessibility` -- Markdown accessibility rule library
+- `no-python-fallback` -- Guidance when Python scanners are unavailable
+
+**Directory**: `.github/prompts/` (16 prompt files)
+
+Pre-built workflows for common tasks: `audit-all-documents.prompt.md`, `auto-remediate.prompt.md`, `quick-document-check.prompt.md`, `verify-fixes.prompt.md`, etc.
+
+**Phase 14 depends on**: Phase 2 (built-in checks). Enhanced by Phase 3 (structure tree), Phase 4 (alt text editor), Phase 13 (adaptive learning).
 
 ---
 
@@ -2172,6 +2322,7 @@ Cloud AI remains a potential **opt-in add-on** for a future Phase 14 (AI-assiste
 | `src/pdf_a11y/core/builtin_checks.py` | 2 | Built-in accessibility checks |
 | `src/pdf_a11y/core/report.py` | 2 | Audit report generation |
 | `src/pdf_a11y/core/preferences.py` | 11 | User settings persistence |
+| `src/pdf_a11y/core/ai_bridge.py` | 14 | AI bridge: connects desktop to vision-LLM toolkit |
 | `src/pdf_a11y/ui/__init__.py` | 1 | UI package init |
 | `src/pdf_a11y/ui/main_frame.py` | 1 | Main window with AUI panel management |
 | `src/pdf_a11y/ui/page_view_panel.py` | 1 | Page bitmap display with overlays |
@@ -2216,6 +2367,43 @@ Cloud AI remains a potential **opt-in add-on** for a future Phase 14 (AI-assiste
 | `tests/fixtures/bad.pdf` | PDF with many accessibility issues for checker testing |
 | `tests/fixtures/scanned.pdf` | Image-only PDF (for testing scope limitations) |
 
+### Agentic Toolkit Files (Phase 14)
+
+| Path | Purpose |
+|------|---------|
+| `tools/mcp_server.py` | FastMCP server with 21+ tools for VS Code Copilot |
+| `tools/scan_all.py` | Multi-format document scanner dispatcher |
+| `tools/scan_metadata.py` | PDF metadata accessibility scanner |
+| `tools/scan_tags.py` | PDF tag structure scanner |
+| `tools/scan_forms.py` | PDF form field accessibility scanner |
+| `tools/scan_word.py` | Word document accessibility scanner |
+| `tools/scan_excel.py` | Excel workbook accessibility scanner |
+| `tools/scan_pptx.py` | PowerPoint presentation accessibility scanner |
+| `tools/scan_epub.py` | ePub document accessibility scanner |
+| `tools/scan_markdown.py` | Markdown file accessibility scanner |
+| `tools/fix_pdf.py` | Automated PDF fixes (title, language, tab order, etc.) |
+| `tools/fix_word.py` | Word document fixes |
+| `tools/fix_excel.py` | Excel workbook fixes |
+| `tools/fix_pptx.py` | PowerPoint fixes |
+| `tools/fix_epub.py` | ePub fixes |
+| `tools/fix_tiers.py` | Rule-to-tier classification (Tier 1/2/3) |
+| `tools/report_md.py` | Markdown audit report generator |
+| `tools/report_html.py` | HTML audit report generator |
+| `tools/merge_results.py` | Multi-document result aggregation |
+| `tools/alt_text/client.py` | GitHub Models API client for vision LLMs |
+| `tools/alt_text/models.py` | 10 vision model registry with defaults |
+| `tools/alt_text/prompt.py` | Layered prompt assembly per profile |
+| `tools/alt_text/profiles.py` | 8 built-in alt text generation profiles |
+| `tools/alt_text/scorer.py` | Alt text quality scorer (0-100) |
+| `tools/alt_text/config.py` | Configuration dataclass |
+| `tools/alt_text/auth.py` | GitHub token resolution |
+| `tools/alt_text/extractor_pdf.py` | PDF image extraction via PyMuPDF |
+| `tools/alt_text/parser.py` | LLM response HTML parser |
+| `tools/alt_text/formats.py` | Output format adapters |
+| `agents/AGENTS.md` | Agent registry (18 agents) |
+| `.vscode/mcp.json` | MCP server configuration |
+| `.a11y-remediation-knowledge.json` | Remediation learning knowledge base |
+
 ### Documentation
 
 | Path | Description |
@@ -2240,6 +2428,14 @@ Cloud AI remains a potential **opt-in add-on** for a future Phase 14 (AI-assiste
 | pytest | 8.0 | MIT | Testing | Dev only |
 | ruff | 0.6 | MIT | Linting | Dev only |
 | mypy | 1.11 | MIT | Type checking | Dev only |
+| httpx | 0.27 | BSD-3-Clause | HTTP client for GitHub Models API | Agents extra |
+| mcp (FastMCP) | 1.0 | MIT | MCP server for Copilot agent integration | Agents extra |
+| PyMuPDF | 1.24 | AGPL-3.0 | Image extraction from PDFs for AI alt text | Agents extra |
+| python-docx | 1.1 | MIT | Word document scanning and remediation | Agents extra |
+| openpyxl | 3.1 | MIT | Excel workbook scanning and remediation | Agents extra |
+| python-pptx | 1.0 | MIT | PowerPoint scanning and remediation | Agents extra |
+| lxml | 5.0 | BSD | XML processing for ePub scanning | Agents extra |
+| pypdf | 4.0 | BSD | PDF text extraction for AI context | Agents extra |
 
 All runtime dependencies are open source with permissive licenses compatible with MIT distribution.
 
@@ -2275,6 +2471,12 @@ Phase 1: Skeleton and Core
   Phase 11: Tool Accessibility (parallel with all phases)
   |
   Phase 12: Packaging (after all phases for full release)
+  |
+  Phase 13: Adaptive Learning System (after Phase 2 + Phase 10)
+  |
+  Phase 14: AI-Assisted Remediation and Agentic Integration (after Phase 2)
+             Shares scanner engine with desktop path.
+             Enhanced by Phase 4 (alt text) and Phase 13 (learning).
 ```
 
 Phases that can run in parallel:
@@ -2359,6 +2561,10 @@ All saved PDFs are validated with:
 | R13 | Color contrast pixel sampling produces false positives | Medium | Low | Report confidence level (high/medium). Flag gradient and image backgrounds as "medium confidence, verify manually." Never auto-fix contrast (requires content stream color changes). |
 | R14 | Auto-sort reading order mishandles complex layouts | Medium | Medium | Always preview before applying. Never auto-apply without confirmation. Multi-column detection uses conservative clustering. Edge cases fall back to top-to-bottom sort with "Review suggested" flag. Single undo reverts entire sort. |
 | R15 | Form field-to-label matching produces incorrect associations | Low | Medium | Preview all proposed moves before applying. Use both structural proximity (sibling order) and visual proximity (bounding box). Flag low-confidence matches for manual review. |
+| R16 | GitHub Models API rate limits or outages break AI alt text | Medium | Low | AI features are opt-in. Desktop tool works fully offline. Queue and retry with exponential backoff. Cache generated alt text to avoid redundant API calls. |
+| R17 | Vision LLM generates inaccurate or harmful alt text | Medium | Medium | Quality scorer flags vague, too-short, or filename-like alt text. User must review and approve all generated alt text before applying. Never auto-apply without confirmation. |
+| R18 | GitHub token exposure in development | Low | High | Token resolved from environment variable or `gh auth token`. Never stored in config files or committed. `.gitignore` covers all token-related files. |
+| R19 | MCP server protocol drift between FastMCP versions | Low | Medium | Pin mcp dependency to `>=1.0.0,<1.8.0`. Monitor for breaking changes. MCP interface is stdio-based, reducing transport risk. |
 
 ---
 
@@ -2374,7 +2580,10 @@ All saved PDFs are validated with:
 | Structure tree editing before content stream editing | Structure tree edits are safe (no corruption risk). Content stream editing is high-risk. Ship value early with safer operations. | Content stream editing from the start: higher risk of shipping buggy code. |
 | Heuristic auto-tagger with optional ML | Heuristics work without external dependencies and are interpretable. ML improves accuracy but adds scikit-learn dependency. | ML-only: requires training data and adds dependency. Heuristic-only: lower accuracy for edge cases. |
 | Rebuild ParentTree from scratch (not incremental) | Eliminates sync bugs between structure tree and ParentTree. Simpler to implement. Acceptable performance for typical document sizes. | Incremental ParentTree updates: faster but much higher bug risk. |
-| No AI/Copilot SDK dependency for core analysis | All 29 built-in checks use pikepdf structure inspection, pypdfium2 rendering for contrast and text extraction, and heuristic algorithms for decorative detection, reading order sort, and label-field matching. No cloud API calls, no network dependency, no API keys. The tool works fully offline. | GitHub Copilot SDK: would enable AI-generated alt text for images, but adds cloud dependency, API cost, and network requirement. Designated as potential future add-on (Phase 13+), not core dependency. |
+| No AI/Copilot SDK dependency for core analysis | All 29 built-in checks use pikepdf structure inspection, pypdfium2 rendering for contrast and text extraction, and heuristic algorithms for decorative detection, reading order sort, and label-field matching. No cloud API calls, no network dependency, no API keys. The tool works fully offline. AI features are available as an opt-in extra (Phase 14) for users who want vision-LLM alt text generation and agentic workflows. | Cloud-first: would limit offline users. No AI at all: would miss the opportunity for complex image description. |
+| Dual-path architecture (desktop + agentic) | The same scanner engine, rule definitions, and fix tier classification power both the wxPython desktop GUI and the MCP server / VS Code Copilot agents. Users choose their preferred workflow without losing functionality. Desktop users get offline reliability; agentic users get AI-powered alt text and batch automation. | Desktop-only: misses developer workflow. Agent-only: excludes accessibility testers who prefer GUI tools. Separate codebases: maintenance burden, rule drift risk. |
+| GitHub Models API for vision LLMs | Provides access to 10+ vision-capable models (GPT-4.1, Llama-4, Phi-4, etc.) through a single API endpoint with GitHub token authentication. Free tier available for open-source projects. | OpenAI direct: single vendor lock-in. Azure OpenAI: requires Azure subscription. Local models: insufficient quality for alt text generation. |
+| MCP server over REST API | MCP (Model Context Protocol) integrates directly with VS Code Copilot via stdio transport. No port management, no CORS, no deployment. Works in any workspace that opens the repo. | REST API: requires separate server process, port allocation, CORS config. gRPC: overkill for tool invocation. |
 | Guided Remediation (Fix Now) over documentation-only | Real user feedback showed that even detailed written instructions are insufficient for many users. One-action fixes (Fix Now button) eliminate the instruction-following barrier entirely. Every auto-fix is undoable. | Documentation-only: cheaper to build but fails users who struggle with multi-step procedures. Wizard-based: more guided but slower per issue. |
 | Auto-Sort Reading Order by visual position | Manual reading order correction is the #1 time sink and error source in PDF remediation. Automated sort with review handles 90%+ of cases correctly. Column detection handles common two-column layouts. Edge cases fall back to manual. | Manual-only: leaves users to reorder elements one by one. Full AI layout analysis: overkill for rectangle-based column detection. |
 | PyInstaller one-folder mode | Faster startup than one-file. Easier to debug. Files can be inspected. | One-file: single exe but slow startup (extracts to temp). NSIS/Inno installer: better UX but more build complexity (added as future option). |

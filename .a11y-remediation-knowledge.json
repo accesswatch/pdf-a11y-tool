@@ -1,0 +1,14 @@
+{
+  "$schema": "Document Accessibility Remediation Knowledge Base",
+  "version": "1.0.0",
+  "description": "Tracks remediation outcomes to improve future fix attempts. Updated by remediator agents after each session.",
+  "rules": {},
+  "patterns": {},
+  "user_preferences": {
+    "default_language": "en-US",
+    "preferred_fix_method": "auto",
+    "auto_install_packages": false,
+    "default_author": ""
+  },
+  "session_log": []
+}
