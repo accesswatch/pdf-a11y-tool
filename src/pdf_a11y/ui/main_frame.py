@@ -6,6 +6,9 @@ import wx.aui
 
 from pdf_a11y.core.document import PdfDocument, EVT_DOC_CHANGED, EVT_DOC_CLOSED
 from pdf_a11y.core.renderer import PageRenderer
+from pdf_a11y.core.builtin_checks import BuiltinChecker
+from pdf_a11y.core.validator import Finding, VeraPdfValidator
+from pdf_a11y.core.report import ReportGenerator, ReportFormat
 
 # ---------------------------------------------------------------------------
 # Panel IDs
@@ -791,31 +794,130 @@ class MainFrame(wx.Frame):
     # ------------------------------------------------------------------
 
     def _on_check_full(self, event: wx.CommandEvent) -> None:
+        """Run both built-in checks and veraPDF (if available)."""
         if not self._document.is_open:
             wx.MessageBox(
                 "Open a PDF file first.", "No Document", wx.OK | wx.ICON_INFORMATION, self
             )
             return
-        wx.MessageBox(
-            "Accessibility checking will be available in Phase 2.",
-            "Not Yet Implemented",
-            wx.OK | wx.ICON_INFORMATION,
-            self,
-        )
+        self.SetStatusText("Running accessibility checks...")
+        wx.SafeYield()
+
+        findings: list[Finding] = []
+        # Built-in checks (always available, no external tools)
+        checker = BuiltinChecker()
+        findings.extend(checker.run(self._document.pdf))
+
+        # veraPDF (optional)
+        verapdf = VeraPdfValidator()
+        self._verapdf_used = verapdf.available
+        if verapdf.available and self._document.path:
+            findings.extend(verapdf.validate(self._document.path))
+
+        self._last_findings = findings
+        self._populate_issues_list(findings)
 
     def _on_check_builtin(self, event: wx.CommandEvent) -> None:
-        self._on_check_full(event)
+        """Run only built-in checks (no external tools)."""
+        if not self._document.is_open:
+            wx.MessageBox(
+                "Open a PDF file first.", "No Document", wx.OK | wx.ICON_INFORMATION, self
+            )
+            return
+        self.SetStatusText("Running built-in checks...")
+        wx.SafeYield()
+
+        checker = BuiltinChecker()
+        findings = checker.run(self._document.pdf)
+        self._verapdf_used = False
+        self._last_findings = findings
+        self._populate_issues_list(findings)
 
     def _on_check_verapdf(self, event: wx.CommandEvent) -> None:
-        self._on_check_full(event)
+        """Run only veraPDF checks."""
+        if not self._document.is_open:
+            wx.MessageBox(
+                "Open a PDF file first.", "No Document", wx.OK | wx.ICON_INFORMATION, self
+            )
+            return
+        verapdf = VeraPdfValidator()
+        if not verapdf.available:
+            wx.MessageBox(
+                "veraPDF is not installed or could not be found.\n\n"
+                "Install veraPDF from https://verapdf.org and ensure "
+                "Java 11 or later is installed.\n\n"
+                "The built-in checks work without veraPDF "
+                "(Check > Run Built-in Checks Only).",
+                "veraPDF Not Found",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+            return
+        self.SetStatusText("Running veraPDF...")
+        wx.SafeYield()
+
+        findings = verapdf.validate(self._document.path) if self._document.path else []
+        self._verapdf_used = True
+        self._last_findings = findings
+        self._populate_issues_list(findings)
+
+    def _populate_issues_list(self, findings: list[Finding]) -> None:
+        """Fill the issues list in the bottom notebook."""
+        self._issues_list.DeleteAllItems()
+        for f in findings:
+            index = self._issues_list.InsertItem(
+                self._issues_list.GetItemCount(), f.severity.capitalize()
+            )
+            self._issues_list.SetItem(index, 1, f.rule_id)
+            self._issues_list.SetItem(index, 2, f.wcag)
+            self._issues_list.SetItem(index, 3, f.description)
+            self._issues_list.SetItem(index, 4, str(f.page) if f.page is not None else "")
+
+        errors = sum(1 for f in findings if f.severity == "error")
+        warnings = sum(1 for f in findings if f.severity == "warning")
+        tips = sum(1 for f in findings if f.severity == "tip")
+        total = len(findings)
+        self.SetStatusText(
+            f"Check complete: {errors} errors, {warnings} warnings, {tips} tips ({total} total)"
+        )
 
     def _on_export_report(self, event: wx.CommandEvent) -> None:
-        wx.MessageBox(
-            "Report export will be available in Phase 2.",
-            "Not Yet Implemented",
-            wx.OK | wx.ICON_INFORMATION,
+        """Export most recent findings as Markdown or CSV."""
+        if not hasattr(self, "_last_findings") or not self._last_findings:
+            wx.MessageBox(
+                "Run an accessibility check first (F5).",
+                "No Findings",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+            return
+
+        dlg = wx.FileDialog(
             self,
+            "Export Report",
+            wildcard=(
+                "Markdown (*.md)|*.md|"
+                "CSV (*.csv)|*.csv"
+            ),
+            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
         )
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            return
+
+        path = dlg.GetPath()
+        filter_idx = dlg.GetFilterIndex()
+        dlg.Destroy()
+
+        fmt = ReportFormat.CSV if filter_idx == 1 else ReportFormat.MARKDOWN
+        verapdf_used = getattr(self, "_verapdf_used", False)
+        gen = ReportGenerator(
+            self._last_findings,
+            pdf_path=self._document.path,
+            verapdf_used=verapdf_used,
+        )
+        gen.write(fmt, path)
+        self.SetStatusText(f"Report exported to {path}")
 
     # ------------------------------------------------------------------
     # Event handlers -- Help
